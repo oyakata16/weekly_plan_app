@@ -1,6 +1,6 @@
 # ===========================================
-# weekly_plan_app.py（改良版）
-# 小学校 週の指導計画（週案）管理システム
+# weekly_plan_app.py（印刷対応・管理画面強化版）
+# ===========================================
 # ・教員：週案を「一週間×1～6校時＋学校裁量枠」の表で作成し提出
 # ・管理職：内容を確認して承認／差戻
 # ・承認時に、教科ごとの時数を自動集計して年間累積に反映
@@ -11,22 +11,26 @@
 # ・全学年：読書科・学校裁量（学力向上）・学校裁量（探究）・学校行事あり
 # ・5校時と6校時の間に「学校裁量」45分枠（月・火・木・金のみ）
 #
-# 【今回の改良点】
-# 1) 教科プルダウンを見やすく（幅拡大＋折り返し＋文字サイズ）
-# 2) 管理職画面の承認フローを整理
-#    - 状態別の件数サマリ
+# 【この版で追加したこと】
+# 1) 教科プルダウン見やすく（幅・折り返し・文字サイズ）
+# 2) 管理職画面の整理
+#    - 状態別件数サマリ
 #    - 状態で絞り込み（提出／承認／差戻／すべて）
 #    - 状態を色付きラベルで表示
-# 3) 年間累積時数を「表形式」で表示（標準・累積・残り）
+#    - 年間累積時数を「表形式」で表示
+# 3) 印刷・PDF用レイアウト
+#    - 教員画面：入力した週案を表形式で表示→ブラウザ印刷
+#    - 管理職画面：各週案ごとに印刷用表を表示→ブラウザ印刷
 # ===========================================
 
 import streamlit as st
 import sqlite3
 from datetime import date
 import json
+import pandas as pd
 
 # ------------------------------
-# 画面全体の見栄え調整（フォントや枠の大きさ）
+# 画面全体の見栄え調整（フォントや枠の大きさ・印刷用CSS）
 # ------------------------------
 st.markdown(
     """
@@ -74,6 +78,17 @@ st.markdown(
     .status-sashimodoshi {
         background-color: #c0392b; /* 赤 */
     }
+
+    /* 印刷時にサイドバーなどを隠す */
+    @media print {
+        header, footer, .stSidebar {
+            display: none !important;
+        }
+        .main .block-container {
+            padding-top: 0px !important;
+            padding-bottom: 0px !important;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -117,10 +132,8 @@ conn.commit()
 
 # ------------------------------
 # 学年ごとの標準時数（45分×回数）※例示値
-#   学習指導要領の科目順になるように並べています
 # ------------------------------
 STANDARD_HOURS = {
-    # 1・2年：生活科あり／理科・社会・総合なし
     "1年": {
         "国語": 306,
         "算数": 140,
@@ -149,7 +162,6 @@ STANDARD_HOURS = {
         "学校裁量（学力向上）": 35,
         "学校裁量（探究）": 35,
     },
-    # 3・4年：生活なし／理科・社会・総合・外国語活動あり
     "3年": {
         "国語": 210,
         "社会": 70,
@@ -179,14 +191,13 @@ STANDARD_HOURS = {
         "特活": 35,
         "外国語活動": 35,
         "総合的な学習の時間": 70,
-        "家庭科": 0,  # 必要なら時数を設定
+        "家庭科": 0,
         "学校行事": 0,
         "読書科": 70,
         "クラブ": 10,
         "学校裁量（学力向上）": 35,
         "学校裁量（探究）": 35,
     },
-    # 5・6年：生活なし／理科・社会・総合・外国語・家庭科あり
     "5年": {
         "国語": 175,
         "社会": 105,
@@ -239,7 +250,6 @@ def get_subjects_for_grade(grade: str):
 # 時間割の枠組み
 # ------------------------------
 DAYS = ["月", "火", "水", "木", "金", "土"]
-# 5校時と6校時の間に「学校裁量」枠を入れる
 PERIODS = ["1校時", "2校時", "3校時", "4校時", "5校時", "学校裁量", "6校時"]
 
 # 1コマあたりの分数
@@ -248,11 +258,10 @@ for day in DAYS:
     PERIOD_MINUTES[day] = {}
     for period in PERIODS:
         if period == "学校裁量":
-            # 学校裁量枠は 月・火・木・金 のみ45分
             if day in ["月", "火", "木", "金"]:
                 PERIOD_MINUTES[day][period] = 45
             else:
-                PERIOD_MINUTES[day][period] = 0  # 水・土は枠なし
+                PERIOD_MINUTES[day][period] = 0
         else:
             num = int(period[0])  # "1校時" → 1
             if num <= 5:
@@ -297,22 +306,65 @@ def add_hours(grade, subject, minutes):
 # ------------------------------
 def status_badge(status: str) -> str:
     cls = "status-teishutsu"
-    text = status
     if status == "承認":
         cls = "status-shonin"
     elif status == "差戻":
         cls = "status-sashimodoshi"
-    return f'<span class="status-label {cls}">{text}</span>'
+    return f'<span class="status-label {cls}">{status}</span>'
 
 # ------------------------------
-# 画面のタイトル＆利用者区分
+# 印刷用の表（DataFrame）を作る
+# ------------------------------
+def build_print_df(timetable: dict) -> pd.DataFrame:
+    rows = []
+    index = []
+
+    for period in PERIODS:
+        has_any_slot = any(PERIOD_MINUTES[day][period] > 0 for day in DAYS)
+        if not has_any_slot:
+            continue
+
+        row = []
+        for day in DAYS:
+            mins = PERIOD_MINUTES[day][period]
+            if mins <= 0:
+                row.append("")
+                continue
+
+            cell = timetable.get(day, {}).get(period, {})
+            subj = cell.get("subject", "")
+            cont = cell.get("content", "")
+
+            text = ""
+            if subj and subj != "（空欄）":
+                text = subj
+            if cont:
+                if text:
+                    text += "\\n" + cont
+                else:
+                    text = cont
+
+            if text:
+                text = f"[{mins}分] " + text
+
+            row.append(text)
+
+        rows.append(row)
+        index.append(period)
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows, index=index, columns=DAYS)
+
+# ------------------------------
+# 画面タイトル・利用者区分
 # ------------------------------
 st.title("小学校 週の指導計画（週案）管理システム（クラウド版）")
 
 role = st.sidebar.selectbox("利用者区分", ["教員", "管理職"])
 
 # ======================================================
-#  教員画面：週案の入力と提出（表形式）
+#  教員画面：週案の入力と提出（表形式＋印刷）
 # ======================================================
 if role == "教員":
     st.header("📘 週案の作成・提出（教員用）")
@@ -361,18 +413,18 @@ if role == "教員":
                         "教科等",
                         subject_options,
                         key=f"{day}_{period}_subject",
-                        label_visibility="collapsed"  # ラベルは用意しつつ画面上は隠す
+                        label_visibility="collapsed",
                     )
                     content = st.text_area(
                         "内容",
                         key=f"{day}_{period}_content",
                         height=60,
-                        label_visibility="collapsed"
+                        label_visibility="collapsed",
                     )
 
             timetable[day][period] = {
                 "subject": subject,
-                "content": content
+                "content": content,
             }
 
     # 自動で教科ごとの分数を集計
@@ -393,35 +445,55 @@ if role == "教員":
     for subject in grade_subjects:
         st.write(f"- {subject}: {subject_minutes[subject]} 分")
 
+    # 印刷レイアウト
+    st.markdown("#### 📄 印刷・PDF保存用レイアウト（教員用）")
+    if st.checkbox("この週案を印刷用に表示する"):
+        df_print = build_print_df(timetable)
+        if df_print.empty:
+            st.info("有効なコマがありません。時間割を入力してください。")
+        else:
+            st.write(f"**{grade}／{teacher}／{week} の週案（印刷用）**")
+            st.table(df_print)
+            st.info(
+                "ブラウザの印刷機能（Ctrl+P または スマホの共有→プリント）から "
+                "PDF 保存・印刷を行ってください。"
+            )
+
     if st.button("✅ この内容で管理職へ提出する"):
         plan = {
             "timetable": timetable,
-            "subject_minutes": subject_minutes
+            "subject_minutes": subject_minutes,
         }
-        cur.execute("""
+        cur.execute(
+            """
             INSERT INTO weekly_plans
               (teacher, grade, week, plan_json, status, submitted_at)
             VALUES
               (?, ?, ?, ?, '提出', DATE('now'))
-        """, (teacher, grade, str(week), json.dumps(plan, ensure_ascii=False)))
+        """,
+            (teacher, grade, str(week), json.dumps(plan, ensure_ascii=False)),
+        )
         conn.commit()
         st.success("週案を提出しました。管理職の承認をお待ちください。")
 
 # ======================================================
-#  管理職画面：承認・差戻／年間累積時数の確認
+#  管理職画面：承認・差戻／年間累積時数（表形式＋印刷）
 # ======================================================
 if role == "管理職":
     st.header("📝 提出された週案一覧（管理職用）")
+    st.caption("① 状態別件数を確認 → ② 下の一覧から内容確認 → ③ 承認 or 差戻 → ④ 年間累積で進捗確認")
 
     # 新しい順に取得
-    cur.execute("""
+    cur.execute(
+        """
         SELECT id, teacher, grade, week, plan_json, status
         FROM weekly_plans
         ORDER BY id DESC
-    """)
+    """
+    )
     all_rows = cur.fetchall()
 
-    # 状態別件数を数える
+    # 状態別件数
     counts = {"提出": 0, "承認": 0, "差戻": 0}
     for row in all_rows:
         stt = row[5]
@@ -435,7 +507,6 @@ if role == "管理職":
 
     # 状態で絞り込み
     filter_status = st.selectbox("表示する状態", ["すべて", "提出", "承認", "差戻"])
-
     if filter_status == "すべて":
         rows = all_rows
     else:
@@ -444,9 +515,8 @@ if role == "管理職":
     if not rows:
         st.info("該当する週案はありません。")
     else:
-        st.caption("※ 各行をクリックすると詳細（時間割＋内容）が表示されます。")
+        st.caption("※ 各行をクリックすると詳細（時間割＋内容＋印刷用レイアウト）が表示されます。")
 
-    # 承認・差戻ボタン押下後に画面を更新するためのフラグ
     rerun_needed = False
 
     for row in rows:
@@ -457,16 +527,11 @@ if role == "管理職":
 
         grade_subjects = get_subjects_for_grade(grade)
 
-        # 状態バッジ
         badge_html = status_badge(status)
-        exp_label = f"ID:{wid} / {week} / {grade} / {teacher} / 状態："
-        expander_title = exp_label + status
+        expander_title = f"ID:{wid} / {week} / {grade} / {teacher} / 状態：{status}"
 
         with st.expander(expander_title):
-            st.markdown(
-                f"状態：{badge_html}",
-                unsafe_allow_html=True
-            )
+            st.markdown(f"状態：{badge_html}", unsafe_allow_html=True)
 
             st.markdown("#### 一週間の時間割（教科等＋内容）")
 
@@ -491,30 +556,37 @@ if role == "管理職":
                             st.write("―")
                             continue
                         cell = timetable.get(day, {}).get(period, {})
-                        subject = cell.get("subject", "（空欄）")
-                        content = cell.get("content", "")
+                        subj = cell.get("subject", "（空欄）")
+                        cont = cell.get("content", "")
                         st.caption(f"{minutes}分")
-                        st.write(f"{subject}")
-                        if content:
-                            st.caption(content)
+                        st.write(f"{subj}")
+                        if cont:
+                            st.caption(cont)
 
             st.markdown("#### 教科別 合計分数（この週）")
             for subject in grade_subjects:
                 mins = subject_minutes.get(subject, 0)
                 st.write(f"- {subject}: {mins} 分")
 
+            # 印刷用
+            st.markdown("#### 📄 印刷・PDF保存用レイアウト（この週案）")
+            df_print = build_print_df(timetable)
+            if df_print.empty:
+                st.info("有効なコマがありません。")
+            else:
+                st.table(df_print)
+                st.caption("※必要に応じてブラウザの印刷機能からPDF保存・印刷してください。")
+
             col1, col2 = st.columns(2)
             with col1:
                 if st.button(f"✅ 承認する（ID:{wid}）", key=f"approve_{wid}"):
-                    # 承認済みの場合は二重反映を防ぐ
                     if status != "承認":
                         for subject, minutes in subject_minutes.items():
                             if minutes > 0:
                                 add_hours(grade, subject, minutes)
-
                         cur.execute(
                             "UPDATE weekly_plans SET status='承認' WHERE id=?",
-                            (wid,)
+                            (wid,),
                         )
                         conn.commit()
                         st.success("承認しました。年間累積時数に反映済みです。")
@@ -527,7 +599,7 @@ if role == "管理職":
                     if status != "差戻":
                         cur.execute(
                             "UPDATE weekly_plans SET status='差戻' WHERE id=?",
-                            (wid,)
+                            (wid,),
                         )
                         conn.commit()
                         st.warning("差戻にしました。教員側で修正して再提出してもらってください。")
@@ -535,7 +607,6 @@ if role == "管理職":
                     else:
                         st.info("すでに差戻済みです。")
 
-    # ボタン操作後に一覧を更新
     if rerun_needed:
         st.experimental_rerun()
 
@@ -555,20 +626,21 @@ if role == "管理職":
 
             cur.execute(
                 "SELECT consumed FROM hours_total WHERE grade=? AND subject=?",
-                (grade, subject)
+                (grade, subject),
             )
             row = cur.fetchone()
             used = row[0] if row else 0.0
             remain = std - used
 
-            table_rows.append({
-                "教科等": subject,
-                "標準（45分コマ）": std,
-                "実施累積（45分コマ）": round(used, 1),
-                "残り（45分コマ）": round(remain, 1),
-            })
+            table_rows.append(
+                {
+                    "教科等": subject,
+                    "標準（45分コマ）": std,
+                    "実施累積（45分コマ）": round(used, 1),
+                    "残り（45分コマ）": round(remain, 1),
+                }
+            )
 
-        # 表として表示
         if table_rows:
             st.table(table_rows)
         else:
