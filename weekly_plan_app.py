@@ -1,28 +1,11 @@
 # ===========================================
-# weekly_plan_app.py（印刷対応・管理画面強化版＋管理職ログイン）
+# weekly_plan_app.py（操作ログ＋教員別時数一覧つき）
 # ===========================================
 # ・教員：週案を「一週間×1～6校時＋学校裁量枠」の表で作成し提出
 # ・管理職：内容を確認して承認／差戻
 # ・承認時に、教科ごとの時数を自動集計して年間累積に反映
-# ・40分授業／45分授業 混在OK（コマごとの分数を自動計算）
-# ・1・2年：生活科あり／理科・社会・総合なし
-# ・3・4年：理科・社会・総合・外国語活動あり
-# ・5・6年：理科・社会・総合・外国語・家庭科・クラブ・委員会あり
-# ・全学年：読書科・学校裁量（学力向上）・学校裁量（探究）・学校行事あり
-# ・5校時と6校時の間に「学校裁量」45分枠（月・火・木・金のみ）
-#
-# 【この版で追加・改善したこと】
-# 1) 教科プルダウン見やすく（幅・折り返し・文字サイズ）
-# 2) 管理職画面の整理
-#    - 状態別件数サマリ
-#    - 状態で絞り込み（提出／承認／差戻／すべて）
-#    - 状態を色付きラベルで表示
-#    - 年間累積時数を「表形式」で表示
-# 3) 印刷・PDF用レイアウト
-#    - 教員画面：入力した週案を表形式で表示→ブラウザ印刷
-#    - 管理職画面：各週案ごとに印刷用表を表示→ブラウザ印刷
-# 4) 管理職専用ログイン（パスワード必須）
-#    - URLを知っていても、パスワードがないと管理職画面は見られない
+# ・操作ログ：提出日時／承認日時／承認者を記録・表示
+# ・教員別・学年別の年間時数一覧を表示（承認済み週案ベース）
 # ===========================================
 
 import streamlit as st
@@ -36,9 +19,7 @@ import pandas as pd
 # ------------------------------
 # そのまま使う場合の初期パスワード → "higakoma2025"
 # 変更したい場合は、下の "higakoma2025" をお好きな文字列に書き換えてください。
-# 将来的に安全性を高めるときは、Streamlit Secrets に
-#   ADMIN_PASSWORD = あなたのパスワード
-# を設定すると、そちらが優先されます。
+# （将来、Secrets側に ADMIN_PASSWORD を設定した場合はそちらが優先されます）
 DEFAULT_ADMIN_PASSWORD = "higakoma2025"
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
 
@@ -127,9 +108,19 @@ CREATE TABLE IF NOT EXISTS weekly_plans (
     week TEXT,
     plan_json TEXT,   -- 時間割（教科＋内容）と集計結果をJSONで保存
     status TEXT,
-    submitted_at TEXT
+    submitted_at TEXT,
+    approved_at TEXT,
+    approved_by TEXT
 )
 """)
+
+# 既存DBをアップグレード（列がなければ追加）
+for col in ["submitted_at", "approved_at", "approved_by"]:
+    try:
+        cur.execute(f"ALTER TABLE weekly_plans ADD COLUMN {col} TEXT")
+    except sqlite3.OperationalError:
+        # すでに列がある場合などは無視
+        pass
 
 # 年間の累積時数（45分換算）
 cur.execute("""
@@ -292,7 +283,7 @@ def convert_to_45(mins):
     return mins / 45
 
 # ------------------------------
-# 年間の累積時数に加算
+# 年間の累積時数に加算（学年×教科）
 # ------------------------------
 def add_hours(grade, subject, minutes):
     add_45 = convert_to_45(minutes)
@@ -513,7 +504,7 @@ if role == "教員":
             INSERT INTO weekly_plans
               (teacher, grade, week, plan_json, status, submitted_at)
             VALUES
-              (?, ?, ?, ?, '提出', DATE('now'))
+              (?, ?, ?, ?, '提出', DATETIME('now'))
         """,
             (teacher, grade, str(week), json.dumps(plan, ensure_ascii=False)),
         )
@@ -521,19 +512,19 @@ if role == "教員":
         st.success("週案を提出しました。管理職の承認をお待ちください。")
 
 # ======================================================
-#  管理職画面：承認・差戻／年間累積時数（表形式＋印刷）
+#  管理職画面：承認・差戻／年間累積時数（表形式＋印刷＋操作ログ＋教員別）
 # ======================================================
 if role == "管理職":
     # まずログイン必須
     require_manager_login()
 
     st.header("📝 提出された週案一覧（管理職用）")
-    st.caption("① 状態別件数を確認 → ② 下の一覧から内容確認 → ③ 承認 or 差戻 → ④ 年間累積で進捗確認")
+    st.caption("① 状態別件数 → ② 内容確認 → ③ 承認／差戻 → ④ 年間累積と教員別一覧を確認")
 
-    # 新しい順に取得
+    # 新しい順に取得（操作ログ用に submitted_at, approved_at, approved_by も取得）
     cur.execute(
         """
-        SELECT id, teacher, grade, week, plan_json, status
+        SELECT id, teacher, grade, week, plan_json, status, submitted_at, approved_at, approved_by
         FROM weekly_plans
         ORDER BY id DESC
     """
@@ -562,12 +553,22 @@ if role == "管理職":
     if not rows:
         st.info("該当する週案はありません。")
     else:
-        st.caption("※ 各行をクリックすると詳細（時間割＋内容＋印刷用レイアウト）が表示されます。")
+        st.caption("※ 各行をクリックすると詳細（時間割＋内容＋印刷用レイアウト＋操作履歴）が表示されます。")
 
     rerun_needed = False
 
     for row in rows:
-        wid, teacher, grade, week, plan_json, status = row
+        (
+            wid,
+            teacher,
+            grade,
+            week,
+            plan_json,
+            status,
+            submitted_at,
+            approved_at,
+            approved_by,
+        ) = row
         plan = json.loads(plan_json)
         timetable = plan.get("timetable", {})
         subject_minutes = plan.get("subject_minutes", {})
@@ -579,6 +580,15 @@ if role == "管理職":
 
         with st.expander(expander_title):
             st.markdown(f"状態：{badge_html}", unsafe_allow_html=True)
+
+            st.markdown("#### 操作履歴")
+            st.write(f"- 提出者：{teacher}")
+            st.write(f"- 提出日時：{submitted_at if submitted_at else '（記録なし）'}")
+            if approved_at:
+                st.write(f"- 承認日時：{approved_at}")
+                st.write(f"- 承認者：{approved_by if approved_by else '管理職'}")
+            else:
+                st.write("- 承認：未承認")
 
             st.markdown("#### 一週間の時間割（教科等＋内容）")
 
@@ -628,12 +638,19 @@ if role == "管理職":
             with col1:
                 if st.button(f"✅ 承認する（ID:{wid}）", key=f"approve_{wid}"):
                     if status != "承認":
+                        # 学年×教科の年間累積に加算
                         for subject, minutes in subject_minutes.items():
                             if minutes > 0:
                                 add_hours(grade, subject, minutes)
                         cur.execute(
-                            "UPDATE weekly_plans SET status='承認' WHERE id=?",
-                            (wid,),
+                            """
+                            UPDATE weekly_plans
+                            SET status='承認',
+                                approved_at=DATETIME('now'),
+                                approved_by=?
+                            WHERE id=?
+                            """,
+                            ("管理職", wid),
                         )
                         conn.commit()
                         st.success("承認しました。年間累積時数に反映済みです。")
@@ -658,9 +675,45 @@ if role == "管理職":
         st.experimental_rerun()
 
     # --------------------------------------
-    # 年間累積時数の状況（表形式）
+    # 操作ログ一覧（全件）
     # --------------------------------------
-    st.header("📊 年間累積時数の状況（45分コマ換算・表形式）")
+    st.header("📚 操作ログ一覧")
+
+    log_rows = []
+    for row in all_rows:
+        (
+            wid,
+            teacher,
+            grade,
+            week,
+            plan_json,
+            status,
+            submitted_at,
+            approved_at,
+            approved_by,
+        ) = row
+        log_rows.append(
+            {
+                "ID": wid,
+                "学年": grade,
+                "教員": teacher,
+                "週": week,
+                "状態": status,
+                "提出日時": submitted_at,
+                "承認日時": approved_at,
+                "承認者": approved_by,
+            }
+        )
+
+    if log_rows:
+        st.table(log_rows)
+    else:
+        st.info("まだ提出された週案がありません。")
+
+    # --------------------------------------
+    # 年間累積時数の状況（学年×教科）
+    # --------------------------------------
+    st.header("📊 年間累積時数の状況（45分コマ換算・学年×教科）")
 
     for grade in STANDARD_HOURS.keys():
         st.subheader(f"{grade}の時数状況")
@@ -692,3 +745,49 @@ if role == "管理職":
             st.table(table_rows)
         else:
             st.info("まだ承認された週案がありません。")
+
+    # --------------------------------------
+    # 教員別・年間時数一覧（承認済み週案ベース）
+    # --------------------------------------
+    st.header("👩‍🏫 教員別・年間時数一覧（承認済み週案ベース）")
+
+    # 教員別集計：weekly_plans（承認済み）の subject_minutes を使って計算
+    cur.execute(
+        """
+        SELECT teacher, grade, plan_json, status
+        FROM weekly_plans
+    """
+    )
+    rows_for_teacher = cur.fetchall()
+
+    teacher_totals = {}  # (grade, teacher, subject) -> 45分コマ
+
+    for teacher, grade, plan_json, status in rows_for_teacher:
+        if status != "承認":
+            continue
+        plan = json.loads(plan_json)
+        subject_minutes = plan.get("subject_minutes", {})
+        for subject, minutes in subject_minutes.items():
+            if minutes <= 0:
+                continue
+            key = (grade, teacher, subject)
+            teacher_totals[key] = teacher_totals.get(key, 0) + convert_to_45(minutes)
+
+    for grade in STANDARD_HOURS.keys():
+        st.subheader(f"{grade}の教員別時数状況")
+        rows_table = []
+        for (g, t, subject), total_45 in teacher_totals.items():
+            if g != grade:
+                continue
+            rows_table.append(
+                {
+                    "教員": t,
+                    "教科等": subject,
+                    "実施累積（45分コマ）": round(total_45, 1),
+                }
+            )
+
+        if rows_table:
+            st.table(rows_table)
+        else:
+            st.info("まだ承認済み週案がありません。")
