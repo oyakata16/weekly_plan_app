@@ -32,13 +32,14 @@ import json
 import pandas as pd
 
 # ------------------------------
-# 管理職用パスワード（Streamlit Secrets から取得）
+# 管理職用パスワード
 # ------------------------------
-# Streamlit Cloud の「App settings → Secrets」で
-#   ADMIN_PASSWORD = あなたの好きなパスワード
-# を設定しておくと、その値が使われます。
-# もし未設定の場合は、デフォルト値 "admin1234" になります（必要に応じて変更可）。
-DEFAULT_ADMIN_PASSWORD = "admin1234"
+# そのまま使う場合の初期パスワード → "higakoma2025"
+# 変更したい場合は、下の "higakoma2025" をお好きな文字列に書き換えてください。
+# 将来的に安全性を高めるときは、Streamlit Secrets に
+#   ADMIN_PASSWORD = あなたのパスワード
+# を設定すると、そちらが優先されます。
+DEFAULT_ADMIN_PASSWORD = "higakoma2025"
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
 
 # ------------------------------
@@ -325,7 +326,6 @@ def status_badge(status: str) -> str:
         cls = "status-shonin"
     elif status == "差戻":
         cls = "status-sashimodoshi"
-        # 赤に
     return f'<span class="status-label {cls}">{status}</span>'
 
 # ------------------------------
@@ -356,7 +356,7 @@ def build_print_df(timetable: dict) -> pd.DataFrame:
                 text = subj
             if cont:
                 if text:
-                    text += "\\n" + cont
+                    text += "\n" + cont
                 else:
                     text = cont
 
@@ -371,13 +371,6 @@ def build_print_df(timetable: dict) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows, index=index, columns=DAYS)
-
-# ------------------------------
-# 画面タイトル・利用者区分
-# ------------------------------
-st.title("小学校 週の指導計画（週案）管理システム（クラウド版）")
-
-role = st.sidebar.selectbox("利用者区分", ["教員", "管理職"])
 
 # ------------------------------
 # 管理職ログイン状態（セッション管理）
@@ -400,12 +393,19 @@ def require_manager_login():
             st.session_state["manager_authenticated"] = True
             st.sidebar.success("管理職としてログインしました。")
         else:
-            st.sidebar.error("パスワードが違います。")
+            st.sidebar.error("パスワードが違います")
 
     # 認証されていない間は本文を表示しない
     if not st.session_state["manager_authenticated"]:
         st.warning("管理職専用画面です。サイドバーからパスワードを入力してください。")
         st.stop()
+
+# ------------------------------
+# 画面タイトル・利用者区分
+# ------------------------------
+st.title("小学校 週の指導計画（週案）管理システム（クラウド版）")
+
+role = st.sidebar.selectbox("利用者区分", ["教員", "管理職"])
 
 # ======================================================
 #  教員画面：週案の入力と提出（表形式＋印刷）
