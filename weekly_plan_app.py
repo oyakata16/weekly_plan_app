@@ -1,6 +1,8 @@
 # ===========================================
 # weekly_plan_app.py
 # 専科対応版（担任／専科切替＋クラス情報＋操作ログ＋教員別時数一覧）
+# ・専科も学級担任と同様に全教科から選択可能
+# ・専科の場合「指導学級：○年○組」を画面に明示表示
 # ===========================================
 
 import streamlit as st
@@ -361,20 +363,13 @@ if role == "教員":
     class_name = st.text_input("クラス（例：1-1, 3-2 など）")
     week = st.date_input("対象週（週の初日：月曜日など）", value=date.today())
 
+    # 専科の場合、指導学級をはっきり表示
+    if teacher_type.startswith("専科") and grade and class_name:
+        st.info(f"専科の先生が担当する指導学級：{grade} {class_name}")
+
     grade_subjects = get_subjects_for_grade(grade)
-
-    selected_subjects = []
-    if teacher_type.startswith("専科"):
-        st.info("専科の先生は、担当教科を選んでください（複数選択可）。")
-        selected_subjects = st.multiselect(
-            "担当教科等（複数選択可）", grade_subjects
-        )
-
-    # プルダウンに出す教科リスト
-    if teacher_type.startswith("専科") and selected_subjects:
-        subject_options = ["（空欄）"] + selected_subjects
-    else:
-        subject_options = ["（空欄）"] + grade_subjects
+    # ①専科も担任と同等に：常に学年の全教科から選択可能
+    subject_options = ["（空欄）"] + grade_subjects
 
     st.markdown("#### 一週間の時間割を入力してください（表形式）")
     st.caption("※ 行：校時／列：曜日。各マスで「教科等」と「授業内容」を入力します。")
@@ -496,9 +491,9 @@ if role == "管理職":
     # 状態別件数
     counts = {"提出": 0, "承認": 0, "差戻": 0}
     for row in all_rows:
-        status = row[7]
-        if status in counts:
-            counts[status] += 1
+        status_val = row[7]
+        if status_val in counts:
+            counts[status_val] += 1
 
     st.markdown("#### 状態別件数")
     st.write(f"- 提出：{counts['提出']} 件")
@@ -548,8 +543,8 @@ if role == "管理職":
 
             st.markdown("#### 操作履歴")
             st.write(f"- 勤務形態：{teacher_type if teacher_type else '（未記録）'}")
+            st.write(f"- 指導学級：{grade} {class_name if class_name else '（未記録）'}")
             st.write(f"- 提出者：{teacher}")
-            st.write(f"- クラス：{class_name if class_name else '（未記録）'}")
             st.write(f"- 提出日時：{submitted_at if submitted_at else '（記録なし）'}")
             if approved_at:
                 st.write(f"- 承認日時：{approved_at}")
