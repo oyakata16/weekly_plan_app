@@ -1,8 +1,10 @@
 # ===========================================
 # weekly_plan_app.py
-# 専科対応版（担任／専科切替＋クラス情報＋操作ログ＋教員別時数一覧）
-# ・専科も学級担任と同様に全教科から選択可能
-# ・専科の場合「指導学級：○年○組」を画面に明示表示
+# 専科対応版（担任／専科切替＋クラス情報＋コマごと学級選択＋操作ログ＋教員別時数一覧）
+# ・専科も担任と同等に全教科から選択可能
+# ・専科は「担当学級リスト」を登録し、各コマごとに学級を選択可能
+# ・保存される週案データの各コマに「class」情報を付与
+# ・管理職画面および印刷用レイアウトでも学級が見える
 # ===========================================
 
 import streamlit as st
@@ -304,14 +306,21 @@ def build_print_df(timetable: dict) -> pd.DataFrame:
             cell = timetable.get(day, {}).get(period, {})
             subj = cell.get("subject", "")
             cont = cell.get("content", "")
-            text = ""
+            klass = cell.get("class", "")
+
+            # 表示用テキスト組み立て（学級＋教科＋内容）
+            line = ""
+            if klass:
+                line += f"{klass} "
             if subj and subj != "（空欄）":
-                text = subj
-            if cont:
+                line += subj
+            detail = cont or ""
+            text = line
+            if detail:
                 if text:
-                    text += "\n" + cont
+                    text += "\n" + detail
                 else:
-                    text = cont
+                    text = detail
             if text:
                 text = f"[{mins}分] " + text
             row.append(text)
@@ -360,19 +369,34 @@ if role == "教員":
 
     teacher_type = st.radio("勤務形態", ["担任", "専科（音楽・家庭科など）"])
     grade = st.selectbox("学年", list(STANDARD_HOURS.keys()))
-    class_name = st.text_input("クラス（例：1-1, 3-2 など）")
+    class_name = st.text_input("自分の担任学級（例：1-1, 3-2 など）※担任でなければ空欄可")
     week = st.date_input("対象週（週の初日：月曜日など）", value=date.today())
 
-    # 専科の場合、指導学級をはっきり表示
-    if teacher_type.startswith("専科") and grade and class_name:
-        st.info(f"専科の先生が担当する指導学級：{grade} {class_name}")
-
     grade_subjects = get_subjects_for_grade(grade)
-    # ①専科も担任と同等に：常に学年の全教科から選択可能
     subject_options = ["（空欄）"] + grade_subjects
 
+    # 専科：複数学級を担当するケースに対応（カンマ区切り）
+    if teacher_type.startswith("専科"):
+        st.info("専科の先生は、この週に指導する学級をカンマ区切りで入力してください。")
+        classes_input = st.text_input(
+            "この週に指導する学級（例：3-1,3-2,4-1）",
+            value=class_name
+        )
+        class_candidates = [c.strip() for c in classes_input.split(",") if c.strip()]
+        if class_candidates:
+            st.caption("※ 各コマごとに、下の表で「学級」を選べます。")
+        else:
+            st.caption("※ 学級が未入力の場合、学級選択は空欄のままになります。")
+    else:
+        # 担任の場合：デフォルト学級をそのまま使う
+        classes_input = ""
+        class_candidates = [class_name] if class_name else []
+
+    if teacher_type.startswith("専科") and class_candidates:
+        st.info("この週に指導する学級一覧：" + "、".join(class_candidates))
+
     st.markdown("#### 一週間の時間割を入力してください（表形式）")
-    st.caption("※ 行：校時／列：曜日。各マスで「教科等」と「授業内容」を入力します。")
+    st.caption("※ 行：校時／列：曜日。各マスで「学級（専科の場合）」「教科等」「授業内容」を入力します。")
 
     timetable = {}
 
@@ -402,8 +426,23 @@ if role == "教員":
                     st.write("―")
                     subject = "（空欄）"
                     content = ""
+                    klass = ""
                 else:
                     st.caption(f"{minutes}分")
+
+                    # ② 各コマごとに学級選択（専科のみ）
+                    if teacher_type.startswith("専科") and class_candidates:
+                        klass_select = st.selectbox(
+                            "学級",
+                            ["（未選択）"] + class_candidates,
+                            key=f"{day}_{period}_class",
+                            label_visibility="collapsed",
+                        )
+                        klass = "" if klass_select == "（未選択）" else klass_select
+                    else:
+                        # 担任の場合：一律で自分のクラス（空欄も許容）
+                        klass = class_name
+
                     subject = st.selectbox(
                         "教科等",
                         subject_options,
@@ -417,12 +456,13 @@ if role == "教員":
                         label_visibility="collapsed",
                     )
 
-            timetable[day][period] = {
-                "subject": subject,
-                "content": content,
-            }
+                timetable[day][period] = {
+                    "class": klass,
+                    "subject": subject,
+                    "content": content,
+                }
 
-    # 教科別分数集計
+    # 教科別分数集計（学級に関係なく、学年×教科で計算）
     subject_minutes = {s: 0 for s in grade_subjects}
     for day in DAYS:
         for period in PERIODS:
@@ -543,7 +583,7 @@ if role == "管理職":
 
             st.markdown("#### 操作履歴")
             st.write(f"- 勤務形態：{teacher_type if teacher_type else '（未記録）'}")
-            st.write(f"- 指導学級：{grade} {class_name if class_name else '（未記録）'}")
+            st.write(f"- 基本学級：{grade} {class_name if class_name else '（未記録）'}")
             st.write(f"- 提出者：{teacher}")
             st.write(f"- 提出日時：{submitted_at if submitted_at else '（記録なし）'}")
             if approved_at:
@@ -552,7 +592,7 @@ if role == "管理職":
             else:
                 st.write("- 承認：未承認")
 
-            st.markdown("#### 一週間の時間割（教科等＋内容）")
+            st.markdown("#### 一週間の時間割（学級＋教科等＋内容）")
 
             # ヘッダー
             header_cols = st.columns(COLUMN_WIDTHS)
@@ -574,9 +614,12 @@ if role == "管理職":
                             st.write("―")
                             continue
                         cell = timetable.get(day, {}).get(period, {})
+                        klass = cell.get("class", "")
                         subj = cell.get("subject", "（空欄）")
                         cont = cell.get("content", "")
                         st.caption(f"{minutes}分")
+                        if klass:
+                            st.write(f"{klass}")
                         st.write(f"{subj}")
                         if cont:
                             st.caption(cont)
