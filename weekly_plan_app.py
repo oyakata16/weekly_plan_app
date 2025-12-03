@@ -674,7 +674,7 @@ if role == "管理職":
                         st.info("すでに差戻済みです。")
 
     if rerun_needed:
-        st.experimental_rerun()
+        st.rerun()
 
     # 操作ログ一覧
     st.header("📚 操作ログ一覧")
