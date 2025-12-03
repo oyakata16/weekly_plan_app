@@ -1,10 +1,12 @@
 # ===========================================
 # weekly_plan_app.py
-# 専科対応版（担任／専科切替＋クラス情報＋コマごと学級選択＋操作ログ＋教員別時数一覧）
+# 専科対応版（担任／専科切替＋コマごと学級選択＋操作ログ＋教員別時数一覧）
 # ・専科も担任と同等に全教科から選択可能
-# ・専科は「担当学級リスト」を登録し、各コマごとに学級を選択可能
-# ・保存される週案データの各コマに「class」情報を付与
-# ・管理職画面および印刷用レイアウトでも学級が見える
+# ・専科は「この週に指導する複数学級」を登録し、
+#   各コマごとに学級を選択可能
+# ・各コマに class(学級) / subject(教科等) / content(内容) を保存
+# ・管理職画面で承認／差戻、年間累積、教員別累積を確認
+# ・rerun系のAPIは一切使用していない（エラー回避）
 # ===========================================
 
 import streamlit as st
@@ -78,6 +80,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# 列幅（左端の「校時」列を細め、曜日列を広めに）
 COLUMN_WIDTHS = [0.7] + [1.6] * 6  # 1 + 6列分
 
 # ------------------------------
@@ -109,7 +112,8 @@ for col in ["class", "teacher_type", "submitted_at", "approved_at", "approved_by
     try:
         cur.execute(f"ALTER TABLE weekly_plans ADD COLUMN {col} TEXT")
     except sqlite3.OperationalError:
-        pass  # すでに列がある場合など
+        # すでに列がある場合などは無視
+        pass
 
 # 年間累積時数テーブル
 cur.execute("""
@@ -234,6 +238,7 @@ STANDARD_HOURS = {
 }
 
 def get_subjects_for_grade(grade: str):
+    """学年ごとの教科等一覧を取得"""
     return list(STANDARD_HOURS[grade].keys())
 
 # ------------------------------
@@ -259,9 +264,15 @@ for day in DAYS:
             else:
                 PERIOD_MINUTES[day][period] = 45
 
+# ------------------------------
+# 分 → 45分コマ換算
+# ------------------------------
 def convert_to_45(mins: float) -> float:
     return mins / 45
 
+# ------------------------------
+# 年間累積時数に加算
+# ------------------------------
 def add_hours(grade, subject, minutes):
     add_45 = convert_to_45(minutes)
     cur.execute(
@@ -282,6 +293,9 @@ def add_hours(grade, subject, minutes):
         )
     conn.commit()
 
+# ------------------------------
+# 状態バッジ（HTML）
+# ------------------------------
 def status_badge(status: str) -> str:
     cls = "status-teishutsu"
     if status == "承認":
@@ -290,6 +304,9 @@ def status_badge(status: str) -> str:
         cls = "status-sashimodoshi"
     return f'<span class="status-label {cls}">{status}</span>'
 
+# ------------------------------
+# 印刷用テーブル作成
+# ------------------------------
 def build_print_df(timetable: dict) -> pd.DataFrame:
     rows = []
     index = []
@@ -308,7 +325,7 @@ def build_print_df(timetable: dict) -> pd.DataFrame:
             cont = cell.get("content", "")
             klass = cell.get("class", "")
 
-            # 表示用テキスト組み立て（学級＋教科＋内容）
+            # 学級＋教科＋内容
             line = ""
             if klass:
                 line += f"{klass} "
@@ -430,7 +447,7 @@ if role == "教員":
                 else:
                     st.caption(f"{minutes}分")
 
-                    # ② 各コマごとに学級選択（専科のみ）
+                    # 専科：各コマごとに学級選択
                     if teacher_type.startswith("専科") and class_candidates:
                         klass_select = st.selectbox(
                             "学級",
@@ -440,7 +457,7 @@ if role == "教員":
                         )
                         klass = "" if klass_select == "（未選択）" else klass_select
                     else:
-                        # 担任の場合：一律で自分のクラス（空欄も許容）
+                        # 担任：一律で自分のクラス（空欄も許容）
                         klass = class_name
 
                     subject = st.selectbox(
@@ -552,8 +569,7 @@ if role == "管理職":
     else:
         st.caption("※ 各行をクリックすると詳細（時間割・操作履歴）が表示されます。")
 
-    rerun_needed = False
-
+    # 週案一覧
     for row in rows:
         (
             wid,
@@ -641,6 +657,7 @@ if role == "管理職":
             with col1:
                 if st.button(f"✅ 承認する（ID:{wid}）", key=f"approve_{wid}"):
                     if status != "承認":
+                        # 年間累積に加算
                         for subject, minutes in subject_minutes.items():
                             if minutes > 0:
                                 add_hours(grade, subject, minutes)
@@ -656,7 +673,6 @@ if role == "管理職":
                         )
                         conn.commit()
                         st.success("承認しました。年間累積時数に反映済みです。")
-                        rerun_needed = True
                     else:
                         st.info("すでに承認済みです。")
 
@@ -669,12 +685,8 @@ if role == "管理職":
                         )
                         conn.commit()
                         st.warning("差戻にしました。教員側で修正して再提出してもらってください。")
-                        rerun_needed = True
                     else:
                         st.info("すでに差戻済みです。")
-
-    if rerun_needed:
-        st.rerun()
 
     # 操作ログ一覧
     st.header("📚 操作ログ一覧")
