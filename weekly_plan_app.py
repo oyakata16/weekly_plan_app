@@ -7,6 +7,7 @@
 # ・学級名から学年を推定して、学年×教科の年間累積に自動反映
 # ・40分／45分コマ混在に対応
 # ・管理職ログイン＋承認／差戻＋年間累積一覧
+# ・管理職画面に「学年／教員／週／未承認」フィルタを追加
 # ===========================================
 
 import streamlit as st
@@ -524,7 +525,7 @@ if role == "教員":
                     cell = {"class": klass, "subject": subject, "content": content}
                 timetable[day][period] = cell
 
-    # 学年×教科ごとの分数集計
+    # 学年×教科ごとの分数集計（基準学年分のみ表示）
     week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
     subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
 
@@ -575,6 +576,7 @@ if role == "管理職":
     )
     all_rows = cur.fetchall()
 
+    # 状態別件数
     counts = {"提出": 0, "承認": 0, "差戻": 0}
     for r in all_rows:
         stt = r[7]
@@ -586,11 +588,44 @@ if role == "管理職":
     st.write(f"- 承認：{counts['承認']} 件")
     st.write(f"- 差戻：{counts['差戻']} 件")
 
-    filter_status = st.selectbox("表示する状態", ["すべて", "提出", "承認", "差戻"])
-    if filter_status == "すべて":
-        rows = all_rows
-    else:
-        rows = [r for r in all_rows if r[7] == filter_status]
+    # フィルタ用の候補
+    grade_list = sorted({r[2] for r in all_rows if r[2]})
+    teacher_list = sorted({r[1] for r in all_rows if r[1]})
+    week_list = sorted({r[5] for r in all_rows if r[5]}, reverse=True)
+
+    st.markdown("#### 表示フィルタ")
+
+    col_f1, col_f2, col_f3 = st.columns(3)
+    with col_f1:
+        filter_status = st.selectbox("状態", ["すべて", "提出", "承認", "差戻"])
+    with col_f2:
+        grade_filter = st.selectbox("学年", ["すべて"] + grade_list)
+    with col_f3:
+        teacher_filter = st.selectbox("教員", ["すべて"] + teacher_list)
+
+    col_f4, col_f5 = st.columns(2)
+    with col_f4:
+        week_filter = st.selectbox("週", ["すべて"] + week_list)
+    with col_f5:
+        only_unapproved = st.checkbox("未承認（提出＋差戻）のみ表示する", value=False)
+
+    # フィルタ適用
+    rows = all_rows
+
+    if filter_status != "すべて":
+        rows = [r for r in rows if r[7] == filter_status]
+
+    if grade_filter != "すべて":
+        rows = [r for r in rows if r[2] == grade_filter]
+
+    if teacher_filter != "すべて":
+        rows = [r for r in rows if r[1] == teacher_filter]
+
+    if week_filter != "すべて":
+        rows = [r for r in rows if r[5] == week_filter]
+
+    if only_unapproved:
+        rows = [r for r in rows if r[7] != "承認"]
 
     if not rows:
         st.info("該当する週案はありません。")
@@ -676,8 +711,8 @@ if role == "管理職":
             with col1:
                 if st.button(f"✅ 承認する（ID:{wid}）", key=f"approve_{wid}"):
                     if status != "承認":
-                        for g, subjects in week_minutes_all.items():
-                            for subj, mins in subjects.items():
+                        for g in week_minutes_all:
+                            for subj, mins in week_minutes_all[g].items():
                                 add_hours(g, subj, mins)
                         cur.execute(
                             """
