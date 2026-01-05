@@ -767,3 +767,160 @@ if role == "管理職":
             st.table(rows_table)
         else:
             st.info("まだ承認された週案がありません。")
+            import io
+
+def fetch_all_weekly_plans():
+    cur.execute("""
+        SELECT id, teacher, grade, class, teacher_type, week, plan_json, status,
+               submitted_at, approved_at, approved_by
+        FROM weekly_plans
+        ORDER BY id DESC
+    """)
+    return cur.fetchall()
+
+def fetch_hours_total():
+    cur.execute("""
+        SELECT grade, subject, consumed
+        FROM hours_total
+        ORDER BY grade, subject
+    """)
+    return cur.fetchall()
+
+def flatten_plans_to_rows(plans):
+    """
+    週案（plan_json内のtimetable）を、Excelで扱いやすい「縦持ち」に変換
+    """
+    plan_rows = []
+    slot_rows = []
+
+    for (wid, teacher, grade, class_name, teacher_type, week, plan_json, status,
+         submitted_at, approved_at, approved_by) in plans:
+
+        plan_rows.append({
+            "id": wid,
+            "teacher": teacher,
+            "grade": grade,
+            "class": class_name,
+            "teacher_type": teacher_type,
+            "week": week,
+            "status": status,
+            "submitted_at": submitted_at,
+            "approved_at": approved_at,
+            "approved_by": approved_by,
+        })
+
+        try:
+            plan = json.loads(plan_json) if plan_json else {}
+        except Exception:
+            plan = {}
+
+        timetable = plan.get("timetable", {})
+        for day in DAYS:
+            for period in PERIODS:
+                cell = timetable.get(day, {}).get(period, {})
+                minutes = PERIOD_MINUTES.get(day, {}).get(period, 0)
+
+                slot_rows.append({
+                    "plan_id": wid,
+                    "week": week,
+                    "teacher": teacher,
+                    "base_grade": grade,
+                    "base_class": class_name,
+                    "teacher_type": teacher_type,
+                    "day": day,
+                    "period": period,
+                    "minutes": minutes,
+                    "class": cell.get("class", ""),
+                    "subject": cell.get("subject", ""),
+                    "content": cell.get("content", ""),
+                    "status": status,
+                })
+
+    return pd.DataFrame(plan_rows), pd.DataFrame(slot_rows)
+
+def build_hours_progress_df(hours_total_rows):
+    """
+    hours_total（累積）に、標準時数と残りを付けて表化
+    """
+    out = []
+    # consumedは45分コマ換算（REAL）
+    consumed_map = {(g, s): c for (g, s, c) in hours_total_rows}
+
+    for g in STANDARD_HOURS.keys():
+        for s in get_subjects_for_grade(g):
+            std = STANDARD_HOURS[g][s]
+            used = float(consumed_map.get((g, s), 0.0))
+            remain = std - used
+            out.append({
+                "grade": g,
+                "subject": s,
+                "standard_45": std,
+                "consumed_45": round(used, 2),
+                "remain_45": round(remain, 2),
+            })
+    return pd.DataFrame(out)
+
+def to_excel_bytes(dfs: dict):
+    """
+    dfs: {"SheetName": dataframe, ...}
+    """
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        for sheet, df in dfs.items():
+            # Excelのシート名は31文字制限
+            sheet_name = sheet[:31]
+            df.to_excel(writer, index=False, sheet_name=sheet_name)
+    bio.seek(0)
+    return bio.getvalue()
+
+# ------------------------------
+# ↓↓↓ ここから「管理職画面」のどこかで呼べばOK（末尾推奨）
+# ------------------------------
+st.markdown("---")
+st.header("🧰 バックアップ（Excel/CSV ダウンロード）")
+st.caption("万一アプリに不具合が出た場合に備え、週案データと年間累積をファイルとして保存できます。管理職のみ実行してください。")
+
+plans = fetch_all_weekly_plans()
+df_plans, df_slots = flatten_plans_to_rows(plans)
+
+hours_rows = fetch_hours_total()
+df_hours = build_hours_progress_df(hours_rows)
+
+today_str = date.today().strftime("%Y%m%d")
+
+# Excel（まとめて）
+excel_bytes = to_excel_bytes({
+    "週案一覧": df_plans,
+    "時間割（コマ明細）": df_slots,
+    "年間累積（進捗）": df_hours,
+})
+
+st.download_button(
+    label="⬇️ バックアップ一括（Excel）をダウンロード",
+    data=excel_bytes,
+    file_name=f"weekly_plan_backup_{today_str}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+
+# CSV（個別）
+st.download_button(
+    label="⬇️ 週案一覧（CSV）",
+    data=df_plans.to_csv(index=False).encode("utf-8-sig"),
+    file_name=f"weekly_plans_{today_str}.csv",
+    mime="text/csv",
+)
+
+st.download_button(
+    label="⬇️ 時間割（コマ明細）（CSV）",
+    data=df_slots.to_csv(index=False).encode("utf-8-sig"),
+    file_name=f"weekly_slots_{today_str}.csv",
+    mime="text/csv",
+)
+
+st.download_button(
+    label="⬇️ 年間累積（進捗）（CSV）",
+    data=df_hours.to_csv(index=False).encode("utf-8-sig"),
+    file_name=f"hours_progress_{today_str}.csv",
+    mime="text/csv",
+)
+
