@@ -15,6 +15,7 @@ import sqlite3
 from datetime import date
 import json
 import pandas as pd
+import io
 
 # ------------------------------
 # 管理職用パスワード
@@ -742,32 +743,37 @@ if role == "管理職":
                         st.info("すでに差戻済みです。")
 
     # 年間累積時数一覧
-    st.header("📊 年間累積時数の状況（学年×教科／45分コマ換算）")
-    for g in STANDARD_HOURS.keys():
-        st.subheader(f"{g}の時数状況")
-        rows_table = []
-        for subj in get_subjects_for_grade(g):
-            std = STANDARD_HOURS[g][subj]
-            cur.execute(
-                "SELECT consumed FROM hours_total WHERE grade=? AND subject=?",
-                (g, subj),
-            )
-            row = cur.fetchone()
-            used = row[0] if row else 0.0
-            remain = std - used
-            rows_table.append(
-                {
-                    "教科等": subj,
-                    "標準（45分コマ）": std,
-                    "実施累積（45分コマ）": round(used, 1),
-                    "残り（45分コマ）": round(remain, 1),
-                }
-            )
-        if rows_table:
-            st.table(rows_table)
-        else:
-            st.info("まだ承認された週案がありません。")
-            import io
+# 年間累積時数一覧
+st.header("📊 年間累積時数の状況（学年×教科／45分コマ換算）")
+for g in STANDARD_HOURS.keys():
+    st.subheader(f"{g}の時数状況")
+    rows_table = []
+    for subj in get_subjects_for_grade(g):
+        std = STANDARD_HOURS[g][subj]
+        cur.execute(
+            "SELECT consumed FROM hours_total WHERE grade=? AND subject=?",
+            (g, subj),
+        )
+        row = cur.fetchone()
+        used = row[0] if row else 0.0
+        remain = std - used
+        rows_table.append(
+            {
+                "教科等": subj,
+                "標準（45分コマ）": std,
+                "実施累積（45分コマ）": round(used, 1),
+                "残り（45分コマ）": round(remain, 1),
+            }
+        )
+    if rows_table:
+        st.table(rows_table)
+    else:
+        st.info("まだ承認された週案がありません。")
+
+
+# ======================================================
+# 🧰 バックアップ（Excel/CSV ダウンロード）
+# ======================================================
 
 def fetch_all_weekly_plans():
     cur.execute("""
@@ -787,9 +793,6 @@ def fetch_hours_total():
     return cur.fetchall()
 
 def flatten_plans_to_rows(plans):
-    """
-    週案（plan_json内のtimetable）を、Excelで扱いやすい「縦持ち」に変換
-    """
     plan_rows = []
     slot_rows = []
 
@@ -839,21 +842,17 @@ def flatten_plans_to_rows(plans):
     return pd.DataFrame(plan_rows), pd.DataFrame(slot_rows)
 
 def build_hours_progress_df(hours_total_rows):
-    """
-    hours_total（累積）に、標準時数と残りを付けて表化
-    """
     out = []
-    # consumedは45分コマ換算（REAL）
-    consumed_map = {(g, s): c for (g, s, c) in hours_total_rows}
+    consumed_map = {(gg, ss): cc for (gg, ss, cc) in hours_total_rows}
 
-    for g in STANDARD_HOURS.keys():
-        for s in get_subjects_for_grade(g):
-            std = STANDARD_HOURS[g][s]
-            used = float(consumed_map.get((g, s), 0.0))
+    for gg in STANDARD_HOURS.keys():
+        for ss in get_subjects_for_grade(gg):
+            std = STANDARD_HOURS[gg][ss]
+            used = float(consumed_map.get((gg, ss), 0.0))
             remain = std - used
             out.append({
-                "grade": g,
-                "subject": s,
+                "grade": gg,
+                "subject": ss,
                 "standard_45": std,
                 "consumed_45": round(used, 2),
                 "remain_45": round(remain, 2),
@@ -861,21 +860,15 @@ def build_hours_progress_df(hours_total_rows):
     return pd.DataFrame(out)
 
 def to_excel_bytes(dfs: dict):
-    """
-    dfs: {"SheetName": dataframe, ...}
-    """
     bio = io.BytesIO()
     with pd.ExcelWriter(bio, engine="openpyxl") as writer:
         for sheet, df in dfs.items():
-            # Excelのシート名は31文字制限
-            sheet_name = sheet[:31]
-            df.to_excel(writer, index=False, sheet_name=sheet_name)
+            df.to_excel(writer, index=False, sheet_name=sheet[:31])
     bio.seek(0)
     return bio.getvalue()
 
-# ------------------------------
-# ↓↓↓ ここから「管理職画面」のどこかで呼べばOK（末尾推奨）
-# ------------------------------
+
+# ★管理職画面のときだけ表示
 st.markdown("---")
 st.header("🧰 バックアップ（Excel/CSV ダウンロード）")
 st.caption("万一アプリに不具合が出た場合に備え、週案データと年間累積をファイルとして保存できます。管理職のみ実行してください。")
@@ -888,7 +881,6 @@ df_hours = build_hours_progress_df(hours_rows)
 
 today_str = date.today().strftime("%Y%m%d")
 
-# Excel（まとめて）
 excel_bytes = to_excel_bytes({
     "週案一覧": df_plans,
     "時間割（コマ明細）": df_slots,
@@ -902,7 +894,6 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-# CSV（個別）
 st.download_button(
     label="⬇️ 週案一覧（CSV）",
     data=df_plans.to_csv(index=False).encode("utf-8-sig"),
@@ -923,4 +914,3 @@ st.download_button(
     file_name=f"hours_progress_{today_str}.csv",
     mime="text/csv",
 )
-
