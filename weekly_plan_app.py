@@ -868,49 +868,50 @@ def to_excel_bytes(dfs: dict):
     return bio.getvalue()
 
 
-# ★管理職画面のときだけ表示
-st.markdown("---")
-st.header("🧰 バックアップ（Excel/CSV ダウンロード）")
-st.caption("万一アプリに不具合が出た場合に備え、週案データと年間累積をファイルとして保存できます。管理職のみ実行してください。")
+# ★管理職画面のときだけ表示（バックアップ）
+if role == "管理職":
+    st.markdown("---")
+    st.header("🧰 バックアップ（Excel/CSV ダウンロード）")
+    st.caption("万一アプリに不具合が出た場合に備え、週案データと年間累積をファイルとして保存できます。管理職のみ実行してください。")
 
-plans = fetch_all_weekly_plans()
-df_plans, df_slots = flatten_plans_to_rows(plans)
+    plans = fetch_all_weekly_plans()
+    df_plans, df_slots = flatten_plans_to_rows(plans)
 
-hours_rows = fetch_hours_total()
-df_hours = build_hours_progress_df(hours_rows)
+    hours_rows = fetch_hours_total()
+    df_hours = build_hours_progress_df(hours_rows)
 
-today_str = date.today().strftime("%Y%m%d")
+    today_str = date.today().strftime("%Y%m%d")
 
-excel_bytes = to_excel_bytes({
-    "週案一覧": df_plans,
-    "時間割（コマ明細）": df_slots,
-    "年間累積（進捗）": df_hours,
-})
+    excel_bytes = to_excel_bytes({
+        "週案一覧": df_plans,
+        "時間割（コマ明細）": df_slots,
+        "年間累積（進捗）": df_hours,
+    })
 
-st.download_button(
-    label="⬇️ バックアップ一括（Excel）をダウンロード",
-    data=excel_bytes,
-    file_name=f"weekly_plan_backup_{today_str}.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-)
+    st.download_button(
+        label="⬇️ バックアップ一括（Excel）をダウンロード",
+        data=excel_bytes,
+        file_name=f"weekly_plan_backup_{today_str}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
-st.download_button(
-    label="⬇️ 週案一覧（CSV）",
-    data=df_plans.to_csv(index=False).encode("utf-8-sig"),
-    file_name=f"weekly_plans_{today_str}.csv",
-    mime="text/csv",
-)
+    st.download_button(
+        label="⬇️ 週案一覧（CSV）",
+        data=df_plans.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"weekly_plans_{today_str}.csv",
+        mime="text/csv",
+    )
 
-st.download_button(
-    label="⬇️ 時間割（コマ明細）（CSV）",
-    data=df_slots.to_csv(index=False).encode("utf-8-sig"),
-    file_name=f"weekly_slots_{today_str}.csv",
-    mime="text/csv",
-)
+    st.download_button(
+        label="⬇️ 時間割（コマ明細）（CSV）",
+        data=df_slots.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"weekly_slots_{today_str}.csv",
+        mime="text/csv",
+    )
 
-st.download_button(
-    label="⬇️ 年間累積（進捗）（CSV）",
-    data=df_hours.to_csv(index=False).encode("utf-8-sig"),
-    file_name=f"hours_progress_{today_str}.csv",
-    mime="text/csv",
-)
+    st.download_button(
+        label="⬇️ 年間累積（進捗）（CSV）",
+        data=df_hours.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"hours_progress_{today_str}.csv",
+        mime="text/csv",
+    )
