@@ -781,21 +781,21 @@ if role == "管理職":
         )
         """)
         conn.commit()
-    ensure_backup_log_table()
 
-def get_last_backup_date(school_year: str):
-    ensure_backup_log_table()  # ← ★これを必ず最初に
-    cur.execute(
-        "SELECT created_at FROM backup_log WHERE school_year=? ORDER BY id DESC LIMIT 1",
-        (school_year,)
-    )
-    row = cur.fetchone()
-    return row[0] if row else None
-
+    def get_last_backup_date(school_year: str):
+        ensure_backup_log_table()
+        cur.execute(
+            "SELECT created_at FROM backup_log WHERE school_year=? ORDER BY id DESC LIMIT 1",
+            (school_year,)
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
 
     def log_backup(school_year: str, created_by: str, filename: str):
+        ensure_backup_log_table()
         cur.execute(
-            "INSERT INTO backup_log (school_year, created_at, created_by, filename) VALUES (?, DATETIME('now'), ?, ?)",
+            "INSERT INTO backup_log (school_year, created_at, created_by, filename) "
+            "VALUES (?, DATETIME('now'), ?, ?)",
             (school_year, created_by, filename)
         )
         conn.commit()
@@ -824,6 +824,7 @@ def get_last_backup_date(school_year: str):
         slot_rows = []
         for (wid, sy, teacher, grade, class_name, teacher_type, week, plan_json, status,
              submitted_at, approved_at, approved_by) in plans:
+
             plan_rows.append({
                 "id": wid,
                 "school_year": sy,
@@ -843,6 +844,7 @@ def get_last_backup_date(school_year: str):
             except Exception:
                 plan = {}
             timetable = plan.get("timetable", {})
+
             for day in DAYS:
                 for period in PERIODS:
                     cell = timetable.get(day, {}).get(period, {})
@@ -863,23 +865,28 @@ def get_last_backup_date(school_year: str):
                         "content": cell.get("content", ""),
                         "status": status,
                     })
+
         return pd.DataFrame(plan_rows), pd.DataFrame(slot_rows)
 
     def build_hours_progress_df(school_year: str, hours_total_rows):
         out = []
-        consumed_map = {(g, s): c for (_sy, g, s, c) in hours_total_rows}
+        # hours_total_rows: [(school_year, grade, subject, consumed), ...]
+        consumed_map = {(g, s): float(c) for (_sy, g, s, c) in hours_total_rows}
+
         for gg in STANDARD_HOURS.keys():
             for ss in get_subjects_for_grade(gg):
-                std = STANDARD_HOURS[gg][ss]
+                std = float(STANDARD_HOURS[gg][ss])
                 used = float(consumed_map.get((gg, ss), 0.0))
                 remain = std - used
+                pct = (used / std * 100.0) if std > 0 else 0.0
                 out.append({
                     "school_year": school_year,
                     "grade": gg,
                     "subject": ss,
-                    "standard_45": std,
+                    "standard_45": round(std, 2),
                     "consumed_45": round(used, 2),
                     "remain_45": round(remain, 2),
+                    "progress_pct": round(pct, 1),
                 })
         return pd.DataFrame(out)
 
@@ -887,10 +894,14 @@ def get_last_backup_date(school_year: str):
         bio = io.BytesIO()
         with pd.ExcelWriter(bio, engine="openpyxl") as writer:
             for sheet, df in dfs.items():
-                df.to_excel(writer, index=False, sheet_name=sheet[:31])
+                df.to_excel(writer, index=False, sheet_name=str(sheet)[:31])
         bio.seek(0)
         return bio.getvalue()
 
+    def safe_year_str(s: str):
+        return str(s).replace(" ", "").replace("/", "_").replace("\\", "_")
+
+    # --- 画面表示 ---
     st.markdown("---")
     st.header("🧰 バックアップ（Excel/CSV ダウンロード）")
     st.caption(f"対象年度：{view_year}　（管理職のみ実行）")
@@ -902,6 +913,7 @@ def get_last_backup_date(school_year: str):
         st.warning("まだバックアップが作成されていません。初回は必ず作成してください。")
 
     # 7日以上空いたら注意
+    ensure_backup_log_table()
     cur.execute("""
         SELECT julianday('now') - julianday(created_at)
         FROM backup_log
@@ -912,15 +924,10 @@ def get_last_backup_date(school_year: str):
     if row and row[0] is not None and row[0] >= 7:
         st.warning("前回バックアップから7日以上経過しています。バックアップを作成してください。")
 
-    if "backup_excel_bytes" not in st.session_state:
-        st.session_state["backup_excel_bytes"] = None
-    if "backup_csv_pack" not in st.session_state:
-        st.session_state["backup_csv_pack"] = None
-    if "backup_filename" not in st.session_state:
-        st.session_state["backup_filename"] = None
-
-    def safe_year_str(s: str):
-        return s.replace(" ", "").replace("/", "_").replace("\\", "_")
+    # セッション初期化
+    st.session_state.setdefault("backup_excel_bytes", None)
+    st.session_state.setdefault("backup_csv_pack", None)
+    st.session_state.setdefault("backup_filename", None)
 
     created_by = "管理職"
 
@@ -950,8 +957,39 @@ def get_last_backup_date(school_year: str):
 
         log_backup(view_year, created_by=created_by, filename=filename)
         st.success("バックアップを作成しました。下のボタンからダウンロードしてください。")
-            # ======================================================
-    # 🏛 区教委提出用（年間時数 まとめCSV）
+
+    # バックアップDL（作成後のみ表示）
+    if st.session_state["backup_excel_bytes"]:
+        today_str = date.today().strftime("%Y%m%d")
+        st.download_button(
+            label="⬇️ バックアップ一括（Excel）をダウンロード",
+            data=st.session_state["backup_excel_bytes"],
+            file_name=st.session_state["backup_filename"] or f"{safe_year_str(view_year)}_weekly_plan_backup_{today_str}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        csv_pack = st.session_state["backup_csv_pack"] or {}
+        st.download_button(
+            label="⬇️ 週案一覧（CSV）",
+            data=csv_pack.get("weekly_plans", b""),
+            file_name=f"{safe_year_str(view_year)}_weekly_plans_{today_str}.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            label="⬇️ 時間割（コマ明細）（CSV）",
+            data=csv_pack.get("weekly_slots", b""),
+            file_name=f"{safe_year_str(view_year)}_weekly_slots_{today_str}.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            label="⬇️ 年間累積（進捗）（CSV）",
+            data=csv_pack.get("hours_progress", b""),
+            file_name=f"{safe_year_str(view_year)}_hours_progress_{today_str}.csv",
+            mime="text/csv",
+        )
+
+    # ======================================================
+    # 🏛 区教委提出用（年間時数 まとめCSV）※常時表示
     # ======================================================
     st.markdown("---")
     st.header("🏛 区教委提出用（年間時数 まとめCSV）")
@@ -967,58 +1005,6 @@ def get_last_backup_date(school_year: str):
             used = float(consumed_map.get((gg, ss), 0.0))
             remain = std - used
             pct = (used / std * 100.0) if std > 0 else 0.0
-
-            out_rows.append({
-                "年度": view_year,
-                "学年": gg,
-                "教科等": ss,
-                "標準（45分コマ）": round(std, 2),
-                "実施累積（45分コマ）": round(used, 2),
-                "残り（45分コマ）": round(remain, 2),
-                "進捗（％）": round(pct, 1),
-            })
-
-    df_submit = pd.DataFrame(out_rows)
-
-    with st.expander("内容を表示（確認用）", expanded=False):
-        st.dataframe(df_submit, use_container_width=True)
-
-    today_str = date.today().strftime("%Y%m%d")
-    submit_csv = df_submit.to_csv(index=False).encode("utf-8-sig")  # Excel文字化け防止
-
-    st.download_button(
-        label="⬇️ 区教委提出用CSVをダウンロード",
-        data=submit_csv,
-        file_name=f"{safe_year_str(view_year)}_kyoiku_iinkai_teishutsu_{today_str}.csv",
-        mime="text/csv",
-    )
-    if st.session_state["backup_excel_bytes"]:
-        today_str = date.today().strftime("%Y%m%d")
-        st.download_button(
-            label="⬇️ バックアップ一括（Excel）をダウンロード",
-            data=st.session_state["backup_excel_bytes"],
-            file_name=st.session_state["backup_filename"] or f"{safe_year_str(view_year)}_weekly_plan_backup_{today_str}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-    # ======================================================
-    # 🏛 区教委提出用（年間時数 まとめCSV）
-    # ======================================================
-    st.markdown("---")
-    st.header("🏛 区教委提出用（年間時数 まとめCSV）")
-    st.caption(f"対象年度：{view_year}（学年×教科の標準・累積・残りを1本に整形）")
-
-    # 累積を取得（年度で絞る）
-    hours_rows = fetch_hours_total_for_year(view_year)  # [(school_year, grade, subject, consumed), ...]
-    consumed_map = {(g, s): float(c) for (_sy, g, s, c) in hours_rows}
-
-    out_rows = []
-    for gg in STANDARD_HOURS.keys():
-        for ss in get_subjects_for_grade(gg):
-            std = float(STANDARD_HOURS[gg][ss])
-            used = float(consumed_map.get((gg, ss), 0.0))
-            remain = std - used
-            pct = (used / std * 100.0) if std > 0 else 0.0
-
             out_rows.append({
                 "年度": view_year,
                 "学年": gg,
@@ -1043,23 +1029,3 @@ def get_last_backup_date(school_year: str):
         file_name=f"{safe_year_str(view_year)}_kyoiku_iinkai_teishutsu_{today_str}.csv",
         mime="text/csv",
     )
-
-        csv_pack = st.session_state["backup_csv_pack"] or {}
-        st.download_button(
-            label="⬇️ 週案一覧（CSV）",
-            data=csv_pack.get("weekly_plans", b""),
-            file_name=f"{safe_year_str(view_year)}_weekly_plans_{today_str}.csv",
-            mime="text/csv",
-        )
-        st.download_button(
-            label="⬇️ 時間割（コマ明細）（CSV）",
-            data=csv_pack.get("weekly_slots", b""),
-            file_name=f"{safe_year_str(view_year)}_weekly_slots_{today_str}.csv",
-            mime="text/csv",
-        )
-        st.download_button(
-            label="⬇️ 年間累積（進捗）（CSV）",
-            data=csv_pack.get("hours_progress", b""),
-            file_name=f"{safe_year_str(view_year)}_hours_progress_{today_str}.csv",
-            mime="text/csv",
-        )
