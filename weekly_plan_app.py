@@ -979,3 +979,46 @@ def get_last_backup_date(school_year: str):
             file_name=f"{safe_year_str(view_year)}_hours_progress_{today_str}.csv",
             mime="text/csv",
         )
+            # ======================================================
+    # 🏛 区教委提出用（年間時数 まとめCSV）
+    # ======================================================
+    st.markdown("---")
+    st.header("🏛 区教委提出用（年間時数 まとめCSV）")
+    st.caption(f"対象年度：{view_year}（学年×教科の標準・累積・残りを1本に整形）")
+
+    hours_rows = fetch_hours_total_for_year(view_year)
+    consumed_map = {(g, s): float(c) for (_sy, g, s, c) in hours_rows}
+
+    out_rows = []
+    for gg in STANDARD_HOURS.keys():
+        for ss in get_subjects_for_grade(gg):
+            std = float(STANDARD_HOURS[gg][ss])
+            used = float(consumed_map.get((gg, ss), 0.0))
+            remain = std - used
+            pct = (used / std * 100.0) if std > 0 else 0.0
+
+            out_rows.append({
+                "年度": view_year,
+                "学年": gg,
+                "教科等": ss,
+                "標準（45分コマ）": round(std, 2),
+                "実施累積（45分コマ）": round(used, 2),
+                "残り（45分コマ）": round(remain, 2),
+                "進捗（％）": round(pct, 1),
+            })
+
+    df_submit = pd.DataFrame(out_rows)
+
+    with st.expander("内容を表示（確認用）", expanded=False):
+        st.dataframe(df_submit, use_container_width=True)
+
+    today_str = date.today().strftime("%Y%m%d")
+    submit_csv = df_submit.to_csv(index=False).encode("utf-8-sig")  # Excel文字化け防止
+
+    st.download_button(
+        label="⬇️ 区教委提出用CSVをダウンロード",
+        data=submit_csv,
+        file_name=f"{safe_year_str(view_year)}_kyoiku_iinkai_teishutsu_{today_str}.csv",
+        mime="text/csv",
+    )
+
