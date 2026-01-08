@@ -950,35 +950,6 @@ def get_last_backup_date(school_year: str):
 
         log_backup(view_year, created_by=created_by, filename=filename)
         st.success("バックアップを作成しました。下のボタンからダウンロードしてください。")
-
-    if st.session_state["backup_excel_bytes"]:
-        today_str = date.today().strftime("%Y%m%d")
-        st.download_button(
-            label="⬇️ バックアップ一括（Excel）をダウンロード",
-            data=st.session_state["backup_excel_bytes"],
-            file_name=st.session_state["backup_filename"] or f"{safe_year_str(view_year)}_weekly_plan_backup_{today_str}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-
-        csv_pack = st.session_state["backup_csv_pack"] or {}
-        st.download_button(
-            label="⬇️ 週案一覧（CSV）",
-            data=csv_pack.get("weekly_plans", b""),
-            file_name=f"{safe_year_str(view_year)}_weekly_plans_{today_str}.csv",
-            mime="text/csv",
-        )
-        st.download_button(
-            label="⬇️ 時間割（コマ明細）（CSV）",
-            data=csv_pack.get("weekly_slots", b""),
-            file_name=f"{safe_year_str(view_year)}_weekly_slots_{today_str}.csv",
-            mime="text/csv",
-        )
-        st.download_button(
-            label="⬇️ 年間累積（進捗）（CSV）",
-            data=csv_pack.get("hours_progress", b""),
-            file_name=f"{safe_year_str(view_year)}_hours_progress_{today_str}.csv",
-            mime="text/csv",
-        )
             # ======================================================
     # 🏛 区教委提出用（年間時数 まとめCSV）
     # ======================================================
@@ -1021,4 +992,31 @@ def get_last_backup_date(school_year: str):
         file_name=f"{safe_year_str(view_year)}_kyoiku_iinkai_teishutsu_{today_str}.csv",
         mime="text/csv",
     )
+    if st.session_state["backup_excel_bytes"]:
+        today_str = date.today().strftime("%Y%m%d")
+        st.download_button(
+            label="⬇️ バックアップ一括（Excel）をダウンロード",
+            data=st.session_state["backup_excel_bytes"],
+            file_name=st.session_state["backup_filename"] or f"{safe_year_str(view_year)}_weekly_plan_backup_{today_str}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
+        csv_pack = st.session_state["backup_csv_pack"] or {}
+        st.download_button(
+            label="⬇️ 週案一覧（CSV）",
+            data=csv_pack.get("weekly_plans", b""),
+            file_name=f"{safe_year_str(view_year)}_weekly_plans_{today_str}.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            label="⬇️ 時間割（コマ明細）（CSV）",
+            data=csv_pack.get("weekly_slots", b""),
+            file_name=f"{safe_year_str(view_year)}_weekly_slots_{today_str}.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            label="⬇️ 年間累積（進捗）（CSV）",
+            data=csv_pack.get("hours_progress", b""),
+            file_name=f"{safe_year_str(view_year)}_hours_progress_{today_str}.csv",
+            mime="text/csv",
+        )
