@@ -868,50 +868,217 @@ def to_excel_bytes(dfs: dict):
     return bio.getvalue()
 
 
-# ★管理職画面のときだけ表示（バックアップ）
+# ======================================================
+# 🧰 バックアップ（Excel/CSV）※管理職のみ
+#   - 「作成」ボタンで日付付きバックアップを生成
+#   - 生成後にダウンロードボタンを表示
+#   - 前回バックアップから7日超なら注意表示
+# ======================================================
+
+def ensure_backup_log_table():
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS backup_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT,
+        created_by TEXT,
+        filename TEXT
+    )
+    """)
+    conn.commit()
+
+def get_last_backup_date():
+    ensure_backup_log_table()
+    cur.execute("SELECT created_at FROM backup_log ORDER BY id DESC LIMIT 1")
+    row = cur.fetchone()
+    return row[0] if row else None
+
+def log_backup(created_by: str, filename: str):
+    ensure_backup_log_table()
+    cur.execute(
+        "INSERT INTO backup_log (created_at, created_by, filename) VALUES (DATETIME('now'), ?, ?)",
+        (created_by, filename)
+    )
+    conn.commit()
+
+def fetch_all_weekly_plans():
+    cur.execute("""
+        SELECT id, teacher, grade, class, teacher_type, week, plan_json, status,
+               submitted_at, approved_at, approved_by
+        FROM weekly_plans
+        ORDER BY id DESC
+    """)
+    return cur.fetchall()
+
+def fetch_hours_total():
+    cur.execute("""
+        SELECT grade, subject, consumed
+        FROM hours_total
+        ORDER BY grade, subject
+    """)
+    return cur.fetchall()
+
+def flatten_plans_to_rows(plans):
+    plan_rows = []
+    slot_rows = []
+
+    for (wid, teacher, grade, class_name, teacher_type, week, plan_json, status,
+         submitted_at, approved_at, approved_by) in plans:
+
+        plan_rows.append({
+            "id": wid,
+            "teacher": teacher,
+            "grade": grade,
+            "class": class_name,
+            "teacher_type": teacher_type,
+            "week": week,
+            "status": status,
+            "submitted_at": submitted_at,
+            "approved_at": approved_at,
+            "approved_by": approved_by,
+        })
+
+        try:
+            plan = json.loads(plan_json) if plan_json else {}
+        except Exception:
+            plan = {}
+
+        timetable = plan.get("timetable", {})
+        for day in DAYS:
+            for period in PERIODS:
+                cell = timetable.get(day, {}).get(period, {})
+                minutes = PERIOD_MINUTES.get(day, {}).get(period, 0)
+
+                slot_rows.append({
+                    "plan_id": wid,
+                    "week": week,
+                    "teacher": teacher,
+                    "base_grade": grade,
+                    "base_class": class_name,
+                    "teacher_type": teacher_type,
+                    "day": day,
+                    "period": period,
+                    "minutes": minutes,
+                    "class": cell.get("class", ""),
+                    "subject": cell.get("subject", ""),
+                    "content": cell.get("content", ""),
+                    "status": status,
+                })
+
+    return pd.DataFrame(plan_rows), pd.DataFrame(slot_rows)
+
+def build_hours_progress_df(hours_total_rows):
+    out = []
+    consumed_map = {(gg, ss): cc for (gg, ss, cc) in hours_total_rows}
+
+    for gg in STANDARD_HOURS.keys():
+        for ss in get_subjects_for_grade(gg):
+            std = STANDARD_HOURS[gg][ss]
+            used = float(consumed_map.get((gg, ss), 0.0))
+            remain = std - used
+            out.append({
+                "grade": gg,
+                "subject": ss,
+                "standard_45": std,
+                "consumed_45": round(used, 2),
+                "remain_45": round(remain, 2),
+            })
+    return pd.DataFrame(out)
+
+def to_excel_bytes(dfs: dict):
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        for sheet, df in dfs.items():
+            df.to_excel(writer, index=False, sheet_name=sheet[:31])
+    bio.seek(0)
+    return bio.getvalue()
+
+
+# ★ここから表示：管理職のみ
 if role == "管理職":
     st.markdown("---")
     st.header("🧰 バックアップ（Excel/CSV ダウンロード）")
-    st.caption("万一アプリに不具合が出た場合に備え、週案データと年間累積をファイルとして保存できます。管理職のみ実行してください。")
 
-    plans = fetch_all_weekly_plans()
-    df_plans, df_slots = flatten_plans_to_rows(plans)
+    last_backup = get_last_backup_date()
+    if last_backup:
+        st.write(f"前回バックアップ：{last_backup}")
+    else:
+        st.warning("まだバックアップが作成されていません。初回は必ず作成してください。")
 
-    hours_rows = fetch_hours_total()
-    df_hours = build_hours_progress_df(hours_rows)
+    st.caption("操作：①『バックアップを作成』→ ②表示されたダウンロードボタンから保存（Excel/CSV）")
 
-    today_str = date.today().strftime("%Y%m%d")
+    # 7日以上バックアップが無い場合の注意（見落とし防止）
+    cur.execute("""
+        SELECT julianday('now') - julianday(created_at)
+        FROM backup_log
+        ORDER BY id DESC LIMIT 1
+    """)
+    row = cur.fetchone()
+    if row and row[0] is not None and row[0] >= 7:
+        st.warning("前回バックアップから7日以上経過しています。バックアップを作成してください。")
 
-    excel_bytes = to_excel_bytes({
-        "週案一覧": df_plans,
-        "時間割（コマ明細）": df_slots,
-        "年間累積（進捗）": df_hours,
-    })
+    # 生成データはセッションに保持（生成→ダウンロードの順を安定化）
+    if "backup_excel_bytes" not in st.session_state:
+        st.session_state["backup_excel_bytes"] = None
+    if "backup_csv_pack" not in st.session_state:
+        st.session_state["backup_csv_pack"] = None
+    if "backup_filename" not in st.session_state:
+        st.session_state["backup_filename"] = None
 
-    st.download_button(
-        label="⬇️ バックアップ一括（Excel）をダウンロード",
-        data=excel_bytes,
-        file_name=f"weekly_plan_backup_{today_str}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    created_by = "管理職"
 
-    st.download_button(
-        label="⬇️ 週案一覧（CSV）",
-        data=df_plans.to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"weekly_plans_{today_str}.csv",
-        mime="text/csv",
-    )
+    if st.button("🟦 バックアップを作成（今日の日付で生成）"):
+        plans = fetch_all_weekly_plans()
+        df_plans, df_slots = flatten_plans_to_rows(plans)
 
-    st.download_button(
-        label="⬇️ 時間割（コマ明細）（CSV）",
-        data=df_slots.to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"weekly_slots_{today_str}.csv",
-        mime="text/csv",
-    )
+        hours_rows = fetch_hours_total()
+        df_hours = build_hours_progress_df(hours_rows)
 
-    st.download_button(
-        label="⬇️ 年間累積（進捗）（CSV）",
-        data=df_hours.to_csv(index=False).encode("utf-8-sig"),
-        file_name=f"hours_progress_{today_str}.csv",
-        mime="text/csv",
-    )
+        today_str = date.today().strftime("%Y%m%d")
+        filename = f"weekly_plan_backup_{today_str}.xlsx"
+
+        excel_bytes = to_excel_bytes({
+            "週案一覧": df_plans,
+            "時間割（コマ明細）": df_slots,
+            "年間累積（進捗）": df_hours,
+        })
+
+        st.session_state["backup_excel_bytes"] = excel_bytes
+        st.session_state["backup_csv_pack"] = {
+            "weekly_plans": df_plans.to_csv(index=False).encode("utf-8-sig"),
+            "weekly_slots": df_slots.to_csv(index=False).encode("utf-8-sig"),
+            "hours_progress": df_hours.to_csv(index=False).encode("utf-8-sig"),
+        }
+        st.session_state["backup_filename"] = filename
+
+        log_backup(created_by=created_by, filename=filename)
+        st.success("バックアップを作成しました。下のボタンからダウンロードしてください。")
+
+    # 作成済みならダウンロードボタンを出す
+    if st.session_state["backup_excel_bytes"]:
+        today_str = date.today().strftime("%Y%m%d")
+        st.download_button(
+            label="⬇️ バックアップ一括（Excel）をダウンロード",
+            data=st.session_state["backup_excel_bytes"],
+            file_name=st.session_state["backup_filename"] or f"weekly_plan_backup_{today_str}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+
+        csv_pack = st.session_state["backup_csv_pack"] or {}
+        st.download_button(
+            label="⬇️ 週案一覧（CSV）",
+            data=csv_pack.get("weekly_plans", b""),
+            file_name=f"weekly_plans_{today_str}.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            label="⬇️ 時間割（コマ明細）（CSV）",
+            data=csv_pack.get("weekly_slots", b""),
+            file_name=f"weekly_slots_{today_str}.csv",
+            mime="text/csv",
+        )
+        st.download_button(
+            label="⬇️ 年間累積（進捗）（CSV）",
+            data=csv_pack.get("hours_progress", b""),
+            file_name=f"hours_progress_{today_str}.csv",
+            mime="text/csv",
+        )
