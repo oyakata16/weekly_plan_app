@@ -783,10 +783,15 @@ if role == "管理職":
         conn.commit()
     ensure_backup_log_table()
 
-    def get_last_backup_date(school_year: str):
-        cur.execute("SELECT created_at FROM backup_log WHERE school_year=? ORDER BY id DESC LIMIT 1", (school_year,))
-        row = cur.fetchone()
-        return row[0] if row else None
+def get_last_backup_date(school_year: str):
+    ensure_backup_log_table()  # ← ★これを必ず最初に
+    cur.execute(
+        "SELECT created_at FROM backup_log WHERE school_year=? ORDER BY id DESC LIMIT 1",
+        (school_year,)
+    )
+    row = cur.fetchone()
+    return row[0] if row else None
+
 
     def log_backup(school_year: str, created_by: str, filename: str):
         cur.execute(
