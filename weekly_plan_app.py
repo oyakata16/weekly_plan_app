@@ -489,6 +489,45 @@ if role == "教員":
                     cell = {"class": klass, "subject": subject, "content": content}
 
             timetable[day][period] = cell
+# ------------------------------
+# 教員用：この週案をCSVで保存（非常時用）
+# ------------------------------
+st.markdown("---")
+st.subheader("💾 自分の週案を保存（CSV）")
+st.caption("※ 未提出でも保存できます（非常時用の控え）。")
+
+slot_rows = []
+for day in DAYS:
+    for period in PERIODS:
+        mins = PERIOD_MINUTES.get(day, {}).get(period, 0)
+        cell = timetable.get(day, {}).get(period, {})
+        slot_rows.append({
+            "年度": current_school_year,
+            "教員": teacher,
+            "基準学年": base_grade,
+            "担任学級": class_name,
+            "勤務形態": teacher_type,
+            "週": str(week),
+            "曜日": day,
+            "校時": period,
+            "分": mins,
+            "学級": cell.get("class", ""),
+            "教科等": cell.get("subject", ""),
+            "内容": cell.get("content", ""),
+        })
+
+df_my = pd.DataFrame(slot_rows)
+
+my_csv = df_my.to_csv(index=False).encode("utf-8-sig")
+today_str = date.today().strftime("%Y%m%d")
+my_name = f"{teacher or 'teacher'}_{base_grade}_{str(week)}_{today_str}_my_weekly_plan.csv".replace("/", "_")
+
+st.download_button(
+    label="⬇️ この週案をCSVで保存",
+    data=my_csv,
+    file_name=my_name,
+    mime="text/csv",
+)
 
     week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
     subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
@@ -564,6 +603,59 @@ if role == "管理職":
     coly1, coly2, coly3 = st.columns([2, 2, 2])
     with coly1:
         view_year = st.selectbox("表示する年度", years_list, index=years_list.index(get_current_school_year()) if get_current_school_year() in years_list else 0)
+        # ------------------------------
+# 年度 初期化ガード（初回だけ0行を作る）
+# ------------------------------
+def ensure_year_init_table():
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS year_init (
+        school_year TEXT PRIMARY KEY,
+        initialized_at TEXT,
+        initialized_by TEXT
+    )
+    """)
+    conn.commit()
+
+def is_year_initialized(school_year: str) -> bool:
+    ensure_year_init_table()
+    cur.execute("SELECT 1 FROM year_init WHERE school_year=? LIMIT 1", (school_year,))
+    return cur.fetchone() is not None
+
+def init_year_hours_zero(school_year: str, initialized_by: str = "管理職"):
+    """
+    新年度の hours_total を0で種まき（学年×教科）
+    既に存在する行は上書きしない（INSERT OR IGNORE）
+    """
+    ensure_year_init_table()
+
+    # hours_total 0行作成
+    for g in STANDARD_HOURS.keys():
+        for s in get_subjects_for_grade(g):
+            cur.execute("""
+                INSERT OR IGNORE INTO hours_total (school_year, grade, subject, consumed)
+                VALUES (?, ?, ?, 0.0)
+            """, (school_year, g, s))
+    # 初期化ログ
+    cur.execute("""
+        INSERT OR REPLACE INTO year_init (school_year, initialized_at, initialized_by)
+        VALUES (?, DATETIME('now'), ?)
+    """, (school_year, initialized_by))
+    conn.commit()
+
+# 画面表示（初期化されていない年度は警告）
+if not is_year_initialized(view_year):
+    st.warning(
+        f"⚠ {view_year} は未初期化です。"
+        "新年度の場合は、まず『年度を初期化（0で開始）』を押してください。"
+        "（年間累積を0行で作成し、区教委CSVも必ず出せる状態にします）"
+    )
+    if st.button("🟨 年度を初期化（0で開始）"):
+        init_year_hours_zero(view_year, initialized_by="管理職")
+        st.success(f"{view_year} を初期化しました。（累積0で開始）")
+        st.rerun()
+else:
+    st.info(f"✅ {view_year} は初期化済みです。")
+
     with coly2:
         st.write("現在の年度")
         st.write(f"**{get_current_school_year()}**")
@@ -988,44 +1080,59 @@ if role == "管理職":
             mime="text/csv",
         )
 
-    # ======================================================
-    # 🏛 区教委提出用（年間時数 まとめCSV）※常時表示
-    # ======================================================
-    st.markdown("---")
-    st.header("🏛 区教委提出用（年間時数 まとめCSV）")
-    st.caption(f"対象年度：{view_year}（学年×教科の標準・累積・残りを1本に整形）")
+# ======================================================
+# 🏛 区教委提出用（年間時数 まとめCSV）
+# ======================================================
+def to_reiwa_short(year_str: str) -> str:
+    # 例：令和8年度 -> R8
+    import re
+    m = re.search(r"令和\s*([0-9]+)\s*年度", year_str)
+    return f"R{m.group(1)}" if m else year_str.replace("年度", "")
 
-    hours_rows = fetch_hours_total_for_year(view_year)
-    consumed_map = {(g, s): float(c) for (_sy, g, s, c) in hours_rows}
+st.markdown("---")
+st.header("🏛 区教委提出用（年間時数 まとめCSV）")
+st.caption(f"対象年度：{view_year}（学年×教科の標準・累積・残りを1本に整形）")
 
-    out_rows = []
-    for gg in STANDARD_HOURS.keys():
-        for ss in get_subjects_for_grade(gg):
-            std = float(STANDARD_HOURS[gg][ss])
-            used = float(consumed_map.get((gg, ss), 0.0))
-            remain = std - used
-            pct = (used / std * 100.0) if std > 0 else 0.0
-            out_rows.append({
-                "年度": view_year,
-                "学年": gg,
-                "教科等": ss,
-                "標準（45分コマ）": round(std, 2),
-                "実施累積（45分コマ）": round(used, 2),
-                "残り（45分コマ）": round(remain, 2),
-                "進捗（％）": round(pct, 1),
-            })
+# 年間累積を取得（初期化済みなら必ず揃う / 未初期化でも0で補完）
+hours_rows = fetch_hours_total_for_year(view_year)
+consumed_map = {(g, s): float(c) for (_sy, g, s, c) in hours_rows}
 
-    df_submit = pd.DataFrame(out_rows)
+out_rows = []
+for gg in STANDARD_HOURS.keys():
+    for ss in get_subjects_for_grade(gg):
+        std = float(STANDARD_HOURS[gg][ss])
+        used = float(consumed_map.get((gg, ss), 0.0))
+        remain = std - used
+        pct = (used / std * 100.0) if std > 0 else 0.0
 
-    with st.expander("内容を表示（確認用）", expanded=False):
-        st.dataframe(df_submit, use_container_width=True)
+        out_rows.append({
+            "年度": view_year,
+            "学年": gg,
+            "教科等": ss,
+            "標準（45分コマ）": round(std, 2),
+            "実施累積（45分コマ）": round(used, 2),
+            "残り（45分コマ）": round(remain, 2),
+            "進捗（％）": round(pct, 1),
+        })
 
-    today_str = date.today().strftime("%Y%m%d")
-    submit_csv = df_submit.to_csv(index=False).encode("utf-8-sig")
+df_submit = pd.DataFrame(out_rows)[
+    ["年度", "学年", "教科等", "標準（45分コマ）", "実施累積（45分コマ）", "残り（45分コマ）", "進捗（％）"]
+]
 
-    st.download_button(
-        label="⬇️ 区教委提出用CSVをダウンロード",
-        data=submit_csv,
-        file_name=f"{safe_year_str(view_year)}_kyoiku_iinkai_teishutsu_{today_str}.csv",
-        mime="text/csv",
-    )
+with st.expander("内容を表示（確認用）", expanded=False):
+    st.dataframe(df_submit, use_container_width=True)
+
+today_str = date.today().strftime("%Y%m%d")
+submit_csv = df_submit.to_csv(index=False).encode("utf-8-sig")
+
+school_short = "東小松川小学校"
+reiwa_short = to_reiwa_short(view_year)
+submit_name = f"{reiwa_short}_年間指導時数集計_{school_short}_{today_str}.csv"
+
+st.download_button(
+    label="⬇️ 区教委提出用CSVをダウンロード",
+    data=submit_csv,
+    file_name=submit_name,
+    mime="text/csv",
+)
+
