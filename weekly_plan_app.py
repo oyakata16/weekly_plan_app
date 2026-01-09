@@ -576,6 +576,27 @@ if st.checkbox("この週案を印刷用に表示する"):
         )
         conn.commit()
         st.success("週案を提出しました。管理職の承認をお待ちください。")
+def ensure_year_init_table():
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS year_init (
+        school_year TEXT PRIMARY KEY,
+        initialized_at TEXT
+    )
+    """)
+    conn.commit()
+
+def is_year_initialized(school_year: str) -> bool:
+    ensure_year_init_table()
+    cur.execute("SELECT 1 FROM year_init WHERE school_year=? LIMIT 1", (school_year,))
+    return cur.fetchone() is not None
+
+def mark_year_initialized(school_year: str):
+    ensure_year_init_table()
+    cur.execute(
+        "INSERT OR IGNORE INTO year_init (school_year, initialized_at) VALUES (?, DATETIME('now'))",
+        (school_year,)
+    )
+    conn.commit()
 
 
 # ======================================================
@@ -653,15 +674,18 @@ def init_year_hours_zero(school_year: str, initialized_by: str = "管理職"):
 
 # 画面表示（初期化されていない年度は警告）
 if not is_year_initialized(view_year):
-    st.warning(
-        f"⚠ {view_year} は未初期化です。"
-        "新年度の場合は、まず『年度を初期化（0で開始）』を押してください。"
-        "（年間累積を0行で作成し、区教委CSVも必ず出せる状態にします）"
-    )
-    if st.button("🟨 年度を初期化（0で開始）"):
-        init_year_hours_zero(view_year, initialized_by="管理職")
-        st.success(f"{view_year} を初期化しました。（累積0で開始）")
-        st.rerun()
+    # その年度の hours_total を、標準時数の教科分だけ 0 で用意しておく
+    for g in STANDARD_HOURS.keys():
+        for s in get_subjects_for_grade(g):
+            cur.execute(
+                "INSERT OR IGNORE INTO hours_total (school_year, grade, subject, consumed) VALUES (?, ?, ?, 0)",
+                (view_year, g, s)
+            )
+    conn.commit()
+    mark_year_initialized(view_year)
+    st.success(f"{view_year} の初期化を行いました。")
+    st.rerun()
+
 else:
     st.info(f"✅ {view_year} は初期化済みです。")
 
