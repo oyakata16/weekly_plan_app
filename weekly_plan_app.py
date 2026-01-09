@@ -489,7 +489,7 @@ if role == "教員":
                     cell = {"class": klass, "subject": subject, "content": content}
 
             timetable[day][period] = cell
-                week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
+    week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
     subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
 
     st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
