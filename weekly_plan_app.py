@@ -745,19 +745,24 @@ else:
     else:
         st.caption("※ 各行をクリックすると詳細が表示されます。")
 
-    for (
-        wid, school_year, teacher, grade, class_name, teacher_type, week,
-        plan_json, status, submitted_at, approved_at, approved_by
-    ) in rows:
-        try:
-            plan = json.loads(plan_json) if plan_json else {}
-        except Exception:
-            plan = {}
-        timetable = plan.get("timetable", {})
-        week_minutes_all = compute_week_subject_minutes(timetable, grade)
+for (
+    wid, school_year, teacher, grade, class_name, teacher_type, week,
+    plan_json, status, submitted_at, approved_at, approved_by
+) in rows:
+    try:
+        plan = json.loads(plan_json) if plan_json else {}
+    except Exception:
+        plan = {}
 
-        badge_html = status_badge(status)
-        title = f"ID:{wid} / {school_year} / {week} / {grade} / {class_name} / {teacher} / 状態：{status}"
+    timetable = plan.get("timetable", {})
+    week_minutes_all = compute_week_subject_minutes(timetable, grade)
+
+    badge_html = status_badge(status)
+    title = f"ID:{wid} / {school_year} / {week} / {grade} / {class_name} / {teacher} / 状態：{status}"
+
+    with st.expander(title):
+        st.markdown(f"状態：{badge_html}", unsafe_allow_html=True)
+        ...
 
         with st.expander(title):
             st.markdown(f"状態：{badge_html}", unsafe_allow_html=True)
