@@ -537,27 +537,29 @@ st.download_button(
     mime="text/csv",
 )
 
-    week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
-    subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
+week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
+subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
 
-    st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
-    for s in get_subjects_for_grade(base_grade):
-        mins = subject_minutes_this_grade.get(s, 0)
-        st.write(f"- {s}: {mins} 分")
+st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
+for s in get_subjects_for_grade(base_grade):
+    mins = subject_minutes_this_grade.get(s, 0)
+    st.write(f"- {s}: {mins} 分")
 
-    st.markdown("#### 📄 印刷・PDF保存用レイアウト（教員用）")
-    if st.checkbox("この週案を印刷用に表示する"):
-        df_print = build_print_df(timetable)
-        if df_print.empty:
-            st.info("有効なコマがありません。")
-        else:
-            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher}／{week} の週案（印刷用）**")
-            st.table(df_print)
-            st.info("ブラウザの印刷機能から PDF 保存・印刷を行ってください。")
+st.markdown("#### 📄 印刷・PDF保存用レイアウト（教員用）")
+if st.checkbox("この週案を印刷用に表示する"):
+    df_print = build_print_df(timetable)
+    if df_print.empty:
+        st.info("有効なコマがありません。")
+    else:
+        st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher}／{week} の週案（印刷用）**")
+        st.table(df_print)
+        st.info("ブラウザの印刷機能から PDF 保存・印刷を行ってください。")
 
-    if st.button("✅ この内容で管理職へ提出する"):
-        plan = {"timetable": timetable}
-        cur.execute(
+if st.button("✅ この内容で管理職へ提出する"):
+    plan = {"timetable": timetable}
+    cur.execute(
+        # ここは元のまま続けてOK
+
             """
             INSERT INTO weekly_plans
               (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at)
