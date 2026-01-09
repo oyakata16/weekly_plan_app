@@ -745,7 +745,7 @@ else:
         except Exception:
             plan = {}
         timetable = plan.get("timetable", {})
-        week_minutes_all = compute_week_subject_minutes(timetable, grade)
+week_minutes_all = compute_week_subject_minutes(timetable, grade)
 
         badge_html = status_badge(status)
         title = f"ID:{wid} / {school_year} / {week} / {grade} / {class_name} / {teacher} / 状態：{status}"
