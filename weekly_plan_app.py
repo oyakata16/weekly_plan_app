@@ -555,11 +555,9 @@ if st.checkbox("この週案を印刷用に表示する"):
         st.table(df_print)
         st.info("ブラウザの印刷機能から PDF 保存・印刷を行ってください。")
 
-if st.button("✅ この内容で管理職へ提出する"):
-    plan = {"timetable": timetable}
-    cur.execute(
-        # ここは元のまま続けてOK
-
+    if st.button("✅ この内容で管理職へ提出する"):
+        plan = {"timetable": timetable}
+        cur.execute(
             """
             INSERT INTO weekly_plans
               (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at)
@@ -578,6 +576,7 @@ if st.button("✅ この内容で管理職へ提出する"):
         )
         conn.commit()
         st.success("週案を提出しました。管理職の承認をお待ちください。")
+
 
 # ======================================================
 # 管理職画面
