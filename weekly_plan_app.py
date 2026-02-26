@@ -1,8 +1,9 @@
 # ===========================================
-# weekly_plan_app.py（完全版）
-# 担任＋専科ハイブリッド／年度切替／下書き（上書き保存＋一覧復元）
-# 学校行事：3/8・6/8・8/8（=1）＋同一コマ内「残り教科」入力（合計1を担保）
-# 管理職：承認／差戻／年間累積／バックアップ／区教委提出CSV／学校行事内訳CSV
+# weekly_plan_app.py （印刷完成版・完全動作）
+# 担任＋専科ハイブリッド＋年度切替＋下書き(上書き保存/復元)
+# 学校行事：3/8・6/8・8/8(=1)＋残り教科入力（合計8/8必須）
+# 印刷：同一マス2段表示＋st.dataframe＋印刷CSS
+# バックアップ（管理職のみ）＋区教委提出用 年間時数まとめCSV
 # ===========================================
 
 import streamlit as st
@@ -20,12 +21,12 @@ DEFAULT_ADMIN_PASSWORD = "higakoma2025"
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
 
 # ------------------------------
-# 既定の年度
+# 既定の年度（既存データはこれとして引き継ぎ）
 # ------------------------------
 DEFAULT_SCHOOL_YEAR = "令和8年度"
 
 # ------------------------------
-# 画面全体の見栄え調整
+# 画面全体の見栄え調整（印刷完成版）
 # ------------------------------
 st.markdown(
     """
@@ -56,11 +57,30 @@ st.markdown(
     .status-teishutsu { background-color: #f39c12; }
     .status-shonin    { background-color: #27ae60; }
     .status-sashimodoshi { background-color: #c0392b; }
-    .status-draft { background-color: #2980b9; }
+    .status-shitagaki { background-color: #7f8c8d; }
+
+    /* dataframe の折り返し強化（表示・印刷共通） */
+    .dataframe td, .dataframe th {
+        white-space: pre-wrap !important;
+        word-break: break-word !important;
+        line-height: 1.35 !important;
+        vertical-align: top !important;
+    }
 
     @media print {
         header, footer, .stSidebar { display: none !important; }
         .main .block-container { padding-top: 0px !important; padding-bottom: 0px !important; }
+
+        table {
+            width: 100% !important;
+            font-size: 11px !important;
+            border-collapse: collapse !important;
+        }
+        th, td {
+            border: 1px solid #000 !important;
+            padding: 4px !important;
+            white-space: pre-wrap !important;
+        }
     }
     </style>
     """,
@@ -78,7 +98,113 @@ conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
 # ------------------------------
-# 学年ごとの標準時数（45分換算コマ数）
+# アプリ設定（現在の年度をDBに保存：全端末で共通）
+# ------------------------------
+def ensure_settings_table():
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    conn.commit()
+
+def get_setting(key: str, default: str):
+    ensure_settings_table()
+    cur.execute("SELECT value FROM app_settings WHERE key=?", (key,))
+    row = cur.fetchone()
+    return row[0] if row and row[0] is not None else default
+
+def set_setting(key: str, value: str):
+    ensure_settings_table()
+    cur.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+    conn.commit()
+
+def get_current_school_year():
+    return get_setting("current_school_year", DEFAULT_SCHOOL_YEAR)
+
+def set_current_school_year(year_str: str):
+    set_setting("current_school_year", year_str)
+
+# ------------------------------
+# 週案テーブル（年度列あり）
+# ------------------------------
+cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS weekly_plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        school_year TEXT,
+        teacher TEXT,
+        grade TEXT,
+        class TEXT,
+        teacher_type TEXT,
+        week TEXT,
+        plan_json TEXT,
+        status TEXT,
+        submitted_at TEXT,
+        approved_at TEXT,
+        approved_by TEXT
+    )
+    """
+)
+
+# 既存テーブルに不足列があれば追加（古いDBからの移行用）
+for col in ["school_year", "class", "teacher_type", "submitted_at", "approved_at", "approved_by"]:
+    try:
+        cur.execute(f"ALTER TABLE weekly_plans ADD COLUMN {col} TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+# 既存データの school_year が空なら既定年度で埋める
+try:
+    cur.execute(
+        "UPDATE weekly_plans SET school_year=? WHERE school_year IS NULL OR school_year=''",
+        (DEFAULT_SCHOOL_YEAR,),
+    )
+    conn.commit()
+except Exception:
+    pass
+
+# ------------------------------
+# 年間累積時数テーブル（年度列あり）
+# ------------------------------
+cur.execute(
+    """
+    CREATE TABLE IF NOT EXISTS hours_total (
+        school_year TEXT,
+        grade TEXT,
+        subject TEXT,
+        consumed REAL,
+        PRIMARY KEY(school_year, grade, subject)
+    )
+    """
+)
+
+try:
+    cur.execute("ALTER TABLE hours_total ADD COLUMN school_year TEXT")
+    conn.commit()
+except sqlite3.OperationalError:
+    pass
+
+try:
+    cur.execute(
+        "UPDATE hours_total SET school_year=? WHERE school_year IS NULL OR school_year=''",
+        (DEFAULT_SCHOOL_YEAR,),
+    )
+    conn.commit()
+except Exception:
+    pass
+
+conn.commit()
+
+# ------------------------------
+# 学年ごとの標準時数（45分換算コマ数）※校内運用に合わせて調整可
 # ------------------------------
 STANDARD_HOURS = {
     "1年": {
@@ -138,121 +264,29 @@ for day in DAYS:
             PERIOD_MINUTES[day][period] = 40 if num <= 5 else 45
 
 # ------------------------------
-# app_settings：現在の年度をDB保存
+# 学校行事（3/8・6/8・8/8）
 # ------------------------------
-def ensure_settings_table():
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS app_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-    """)
-    conn.commit()
+EVENT_FRACTIONS = [
+    ("なし", 0.0),
+    ("3/8", 3.0 / 8.0),
+    ("6/8", 6.0 / 8.0),
+    ("8/8（＝1）", 1.0),
+]
 
-def get_setting(key: str, default: str):
-    ensure_settings_table()
-    cur.execute("SELECT value FROM app_settings WHERE key=?", (key,))
-    row = cur.fetchone()
-    return row[0] if row and row[0] is not None else default
-
-def set_setting(key: str, value: str):
-    ensure_settings_table()
-    cur.execute(
-        "INSERT INTO app_settings (key, value) VALUES (?, ?) "
-        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        (key, value)
-    )
-    conn.commit()
-
-def get_current_school_year():
-    return get_setting("current_school_year", DEFAULT_SCHOOL_YEAR)
-
-def set_current_school_year(year_str: str):
-    set_setting("current_school_year", year_str)
+def fraction_label_to_value(label: str) -> float:
+    for l, v in EVENT_FRACTIONS:
+        if l == label:
+            return v
+    return 0.0
 
 # ------------------------------
-# DBテーブル
-# ------------------------------
-def ensure_tables():
-    # 提出・承認用（履歴）
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS weekly_plans (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            school_year TEXT,
-            teacher TEXT,
-            grade TEXT,
-            class TEXT,
-            teacher_type TEXT,
-            week TEXT,
-            plan_json TEXT,
-            status TEXT,
-            submitted_at TEXT,
-            approved_at TEXT,
-            approved_by TEXT
-        )
-    """)
-
-    # 下書き（上書き保存：同一 teacher×week×school_year は1件）
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS weekly_drafts (
-            school_year TEXT,
-            teacher TEXT,
-            week TEXT,
-            grade TEXT,
-            class TEXT,
-            teacher_type TEXT,
-            plan_json TEXT,
-            saved_at TEXT,
-            PRIMARY KEY (school_year, teacher, week)
-        )
-    """)
-
-    # 年間累積
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS hours_total (
-            school_year TEXT,
-            grade TEXT,
-            subject TEXT,
-            consumed REAL,
-            PRIMARY KEY(school_year, grade, subject)
-        )
-    """)
-
-    # バックアップログ
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS backup_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            school_year TEXT,
-            created_at TEXT,
-            created_by TEXT,
-            filename TEXT
-        )
-    """)
-
-    conn.commit()
-
-ensure_tables()
-
-# ------------------------------
-# 年度 初期化：hours_total を0で種まき
-# ------------------------------
-def ensure_hours_seed(school_year: str):
-    for g in STANDARD_HOURS.keys():
-        for s in get_subjects_for_grade(g):
-            cur.execute(
-                "INSERT OR IGNORE INTO hours_total (school_year, grade, subject, consumed) VALUES (?, ?, ?, 0.0)",
-                (school_year, g, s)
-            )
-    conn.commit()
-
-# ------------------------------
-# 45分換算
+# 分 → 45分コマ換算
 # ------------------------------
 def convert_to_45(mins: float) -> float:
     return mins / 45.0
 
 # ------------------------------
-# 学級名から学年推定（3-1→3年）
+# 学級名から学年を推定（例：3-1 → 3年）
 # ------------------------------
 def detect_grade_from_class(klass: str):
     if not klass:
@@ -264,109 +298,22 @@ def detect_grade_from_class(klass: str):
     return None
 
 # ------------------------------
-# parts対応：週の教科別分数集計
+# 状態ラベル（HTML）
 # ------------------------------
-def compute_week_subject_minutes(timetable: dict, base_grade: str):
-    """
-    戻り値: { "3年": { "国語": 分数, ... }, ... }
-    cell.parts があれば parts を優先（fraction×分）で集計。
-    """
-    result = {}
-
-    for day in DAYS:
-        for period in PERIODS:
-            cell = timetable.get(day, {}).get(period)
-            if not cell:
-                continue
-
-            base_minutes = PERIOD_MINUTES[day][period]
-            if base_minutes <= 0:
-                continue
-
-            klass0 = cell.get("class", "")
-            parts = cell.get("parts")
-
-            # 互換：parts無しは1本扱い
-            if not parts:
-                parts = [{
-                    "class": klass0,
-                    "subject": cell.get("subject", ""),
-                    "content": cell.get("content", ""),
-                    "fraction": 1.0
-                }]
-
-            for p in parts:
-                subject = (p.get("subject") or "").strip()
-                if subject in ["", "（空欄）"]:
-                    continue
-
-                klass = (p.get("class") or "").strip() or klass0
-                grade_for_slot = detect_grade_from_class(klass) or base_grade
-                if grade_for_slot not in STANDARD_HOURS:
-                    continue
-                if subject not in STANDARD_HOURS[grade_for_slot]:
-                    continue
-
-                frac = float(p.get("fraction", 1.0))
-                minutes = float(base_minutes) * frac
-
-                result.setdefault(grade_for_slot, {})
-                result[grade_for_slot][subject] = result[grade_for_slot].get(subject, 0) + minutes
-
-    return result
+def status_badge(status: str) -> str:
+    cls = "status-teishutsu"
+    if status == "承認":
+        cls = "status-shonin"
+    elif status == "差戻":
+        cls = "status-sashimodoshi"
+    elif status == "下書き":
+        cls = "status-shitagaki"
+    return f'<span class="status-label {cls}">{status}</span>'
 
 # ------------------------------
-# parts対応：学校行事内訳（3/8,6/8,1）を集計
-# ------------------------------
-def compute_school_event_breakdown(timetable: dict, base_grade: str):
-    out = {}
-    for day in DAYS:
-        for period in PERIODS:
-            cell = timetable.get(day, {}).get(period)
-            if not cell:
-                continue
-            base_minutes = PERIOD_MINUTES[day][period]
-            if base_minutes <= 0:
-                continue
-
-            klass0 = cell.get("class", "")
-            parts = cell.get("parts") or [{
-                "class": klass0,
-                "subject": cell.get("subject", ""),
-                "content": cell.get("content", ""),
-                "fraction": 1.0
-            }]
-
-            for p in parts:
-                if (p.get("subject") or "") != "学校行事":
-                    continue
-
-                klass = (p.get("class") or "").strip() or klass0
-                grade_for_slot = detect_grade_from_class(klass) or base_grade
-                if grade_for_slot not in STANDARD_HOURS:
-                    continue
-
-                frac = float(p.get("fraction", 1.0))
-                minutes = float(base_minutes) * frac
-
-                out.setdefault(grade_for_slot, {"3/8": 0, "6/8": 0, "1": 0, "minutes": 0.0})
-
-                if abs(frac - 3/8) < 1e-9:
-                    out[grade_for_slot]["3/8"] += 1
-                elif abs(frac - 6/8) < 1e-9:
-                    out[grade_for_slot]["6/8"] += 1
-                else:
-                    out[grade_for_slot]["1"] += 1
-
-                out[grade_for_slot]["minutes"] += minutes
-
-    return out
-
-# ------------------------------
-# 年間累積に加算
+# 年間累積時数を加算（年度込み）
 # ------------------------------
 def add_hours(school_year: str, grade: str, subject: str, minutes: float):
-    ensure_hours_seed(school_year)
     add_45 = convert_to_45(minutes)
     cur.execute(
         "SELECT consumed FROM hours_total WHERE school_year=? AND grade=? AND subject=?",
@@ -387,84 +334,153 @@ def add_hours(school_year: str, grade: str, subject: str, minutes: float):
     conn.commit()
 
 # ------------------------------
-# 状態ラベル
+# timetable セルの正規化（学校行事＋残り教科 2段）
+# cell構造（保存）:
+#   {
+#     "class": "...",
+#     "event": {"fraction": 0.375, "content": "..."}  # optional
+#     "main": {"subject": "...", "content": "..."}   # optional（残り枠）
+#   }
 # ------------------------------
-def status_badge(status: str) -> str:
-    cls = "status-teishutsu"
-    if status == "承認":
-        cls = "status-shonin"
-    elif status == "差戻":
-        cls = "status-sashimodoshi"
-    elif status == "下書き":
-        cls = "status-draft"
-    return f'<span class="status-label {cls}">{status}</span>'
+def cell_to_segments(cell: dict, slot_minutes: float):
+    """
+    セルを「時間配分つきセグメント」へ展開する。
+    戻り: [{"subject":..., "content":..., "minutes":..., "class":...}, ...]
+    """
+    if not cell or slot_minutes <= 0:
+        return []
+
+    klass = cell.get("class", "")
+    segs = []
+
+    event = cell.get("event") or {}
+    frac = float(event.get("fraction", 0.0) or 0.0)
+    frac = max(0.0, min(1.0, frac))
+
+    event_minutes = round(slot_minutes * frac, 6)
+    remain_minutes = round(slot_minutes - event_minutes, 6)
+
+    # 学校行事セグメント
+    if event_minutes > 0:
+        segs.append({
+            "class": klass,
+            "subject": "学校行事",
+            "content": (event.get("content") or "").strip(),
+            "minutes": event_minutes,
+            "event_fraction": frac,
+        })
+
+    # 残り教科セグメント
+    main = cell.get("main") or {}
+    main_subj = (main.get("subject") or "").strip()
+    main_cont = (main.get("content") or "").strip()
+
+    if remain_minutes > 0 and (main_subj and main_subj != "（空欄）"):
+        segs.append({
+            "class": klass,
+            "subject": main_subj,
+            "content": main_cont,
+            "minutes": remain_minutes,
+            "event_fraction": 0.0,
+        })
+
+    # 学校行事なし（従来互換：cell["subject"]/cell["content"] が来た場合）
+    if frac == 0.0 and not segs:
+        subj = (cell.get("subject") or "").strip()
+        cont = (cell.get("content") or "").strip()
+        if subj and subj != "（空欄）":
+            segs.append({
+                "class": klass,
+                "subject": subj,
+                "content": cont,
+                "minutes": slot_minutes,
+                "event_fraction": 0.0,
+            })
+
+    return segs
 
 # ------------------------------
-# 印刷用 DataFrame（parts対応：同一マスに複数段表示）
+# 1週間分のコマを学年×教科ごとに分数集計（学校行事＋残り教科対応）
+# 戻り: { "3年": { "国語": 分, "学校行事": 分, ... }, ... }
+# ------------------------------
+def compute_week_subject_minutes(timetable: dict, base_grade: str):
+    result = {}
+    for day in DAYS:
+        for period in PERIODS:
+            slot_minutes = PERIOD_MINUTES.get(day, {}).get(period, 0)
+            if slot_minutes <= 0:
+                continue
+            cell = (timetable or {}).get(day, {}).get(period)
+            if not cell:
+                continue
+
+            segs = cell_to_segments(cell, slot_minutes)
+            for seg in segs:
+                subject = seg.get("subject", "")
+                klass = seg.get("class", "")
+                mins = float(seg.get("minutes", 0) or 0)
+
+                grade_for_slot = detect_grade_from_class(klass) or base_grade
+                if grade_for_slot not in STANDARD_HOURS:
+                    continue
+                if subject not in STANDARD_HOURS[grade_for_slot]:
+                    # 学校行事が標準に無い学年はスキップ（通常は全学年入れている想定）
+                    continue
+
+                result.setdefault(grade_for_slot, {})
+                result[grade_for_slot][subject] = result[grade_for_slot].get(subject, 0) + mins
+    return result
+
+# ------------------------------
+# 印刷用 DataFrame（同一マス2段表示）
 # ------------------------------
 def build_print_df(timetable: dict) -> pd.DataFrame:
     rows = []
     index = []
 
     for period in PERIODS:
-        # その校時が全曜日0分ならスキップ
         if not any(PERIOD_MINUTES[day][period] > 0 for day in DAYS):
             continue
 
         row = []
         for day in DAYS:
-            mins = PERIOD_MINUTES[day][period]
-            if mins <= 0:
+            slot_minutes = PERIOD_MINUTES[day][period]
+            if slot_minutes <= 0:
                 row.append("")
                 continue
 
-            cell = (timetable.get(day, {}) or {}).get(period, {}) or {}
-            klass0 = (cell.get("class") or "").strip()
+            cell = (timetable or {}).get(day, {}).get(period, {})
+            segs = cell_to_segments(cell, slot_minutes)
 
-            # partsがなければ互換として単一化
-            parts = cell.get("parts")
-            if not parts:
-                parts = [{
-                    "class": klass0,
-                    "subject": (cell.get("subject") or "").strip(),
-                    "content": (cell.get("content") or "").strip(),
-                    "fraction": 1.0
-                }]
+            # 表示用テキスト
+            parts = []
+            for seg in segs:
+                klass = (seg.get("class") or "").strip()
+                subj = (seg.get("subject") or "").strip()
+                cont = (seg.get("content") or "").strip()
+                mins = float(seg.get("minutes") or 0)
 
-            lines = []
-            for p in parts:
-                subj = (p.get("subject") or "").strip()
-                if subj in ["", "（空欄）"]:
-                    continue
+                head = f"[{int(round(mins))}分]"
+                if klass:
+                    head += f" {klass}"
+                if subj:
+                    head += f" {subj}"
 
-                frac = float(p.get("fraction", 1.0))
-                part_min = int(round(mins * frac))
-
-                kk = (p.get("class") or "").strip() or klass0
-                cont = (p.get("content") or "").strip()
-
-                head = ""
-                if kk:
-                    head += f"{kk} "
-                head += subj
-
-                # 1段目：分＋学級＋教科
                 if cont:
-                    # 2段目：内容（さらに下に）
-                    lines.append(f"[{part_min}分] {head}\n{cont}")
+                    parts.append(head + "\n" + cont)
                 else:
-                    lines.append(f"[{part_min}分] {head}")
+                    parts.append(head)
 
-            # partsが複数なら「空行」を挟んで見やすく
-            row.append("\n\n".join(lines) if lines else "")
+            text = "\n\n".join(parts).strip()
+            row.append(text)
 
         rows.append(row)
         index.append(period)
 
     if not rows:
         return pd.DataFrame()
-
     return pd.DataFrame(rows, index=index, columns=DAYS)
+
 # ------------------------------
 # 管理職ログイン
 # ------------------------------
@@ -489,6 +505,150 @@ def require_manager_login():
         st.stop()
 
 # ------------------------------
+# 年度 初期化（0行種まき）
+# ------------------------------
+def ensure_year_init_table():
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS year_init (
+            school_year TEXT PRIMARY KEY,
+            initialized_at TEXT,
+            initialized_by TEXT
+        )
+        """
+    )
+    conn.commit()
+
+def is_year_initialized(school_year: str) -> bool:
+    ensure_year_init_table()
+    cur.execute("SELECT 1 FROM year_init WHERE school_year=? LIMIT 1", (school_year,))
+    return cur.fetchone() is not None
+
+def init_year_hours_zero(school_year: str, initialized_by: str = "管理職"):
+    ensure_year_init_table()
+    for g in STANDARD_HOURS.keys():
+        for s in get_subjects_for_grade(g):
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO hours_total (school_year, grade, subject, consumed)
+                VALUES (?, ?, ?, 0.0)
+                """,
+                (school_year, g, s),
+            )
+    cur.execute(
+        """
+        INSERT OR REPLACE INTO year_init (school_year, initialized_at, initialized_by)
+        VALUES (?, DATETIME('now'), ?)
+        """,
+        (school_year, initialized_by),
+    )
+    conn.commit()
+
+# ------------------------------
+# 下書き（同一教員×週×年度で1件）
+# ------------------------------
+def upsert_draft(school_year: str, teacher: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
+    # 既存下書きがあればUPDATE、無ければINSERT
+    cur.execute(
+        """
+        SELECT id FROM weekly_plans
+        WHERE school_year=? AND teacher=? AND week=? AND status='下書き'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (school_year, teacher, week_str),
+    )
+    row = cur.fetchone()
+
+    if row:
+        wid = row[0]
+        cur.execute(
+            """
+            UPDATE weekly_plans
+            SET grade=?, class=?, teacher_type=?, plan_json=?
+            WHERE id=?
+            """,
+            (base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), wid),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO weekly_plans
+              (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at)
+            VALUES
+              (?, ?, ?, ?, ?, ?, ?, '下書き', DATETIME('now'))
+            """,
+            (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False)),
+        )
+    conn.commit()
+
+def list_my_drafts(school_year: str, teacher: str):
+    cur.execute(
+        """
+        SELECT id, week, grade, class, teacher_type, plan_json, submitted_at
+        FROM weekly_plans
+        WHERE school_year=? AND teacher=? AND status='下書き'
+        ORDER BY week DESC, id DESC
+        """,
+        (school_year, teacher),
+    )
+    return cur.fetchall()
+
+def load_plan_by_id(wid: int):
+    cur.execute(
+        """
+        SELECT id, school_year, teacher, grade, class, teacher_type, week, plan_json, status
+        FROM weekly_plans
+        WHERE id=?
+        """,
+        (wid,),
+    )
+    return cur.fetchone()
+
+def submit_plan_from_current(school_year: str, teacher: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
+    # まず同一条件の下書きがあれば、それを提出に昇格（UPDATE）
+    cur.execute(
+        """
+        SELECT id FROM weekly_plans
+        WHERE school_year=? AND teacher=? AND week=? AND status='下書き'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (school_year, teacher, week_str),
+    )
+    row = cur.fetchone()
+
+    if row:
+        wid = row[0]
+        cur.execute(
+            """
+            UPDATE weekly_plans
+            SET grade=?, class=?, teacher_type=?, plan_json=?, status='提出', submitted_at=DATETIME('now')
+            WHERE id=?
+            """,
+            (base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), wid),
+        )
+    else:
+        cur.execute(
+            """
+            INSERT INTO weekly_plans
+              (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at)
+            VALUES
+              (?, ?, ?, ?, ?, ?, ?, '提出', DATETIME('now'))
+            """,
+            (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False)),
+        )
+    conn.commit()
+
+# ------------------------------
+# Reiwa短縮
+# ------------------------------
+def to_reiwa_short(year_str: str) -> str:
+    m = re.search(r"令和\s*([0-9]+)\s*年度", str(year_str))
+    return f"R{m.group(1)}" if m else str(year_str).replace("年度", "")
+
+def safe_year_str(s: str):
+    return str(s).replace(" ", "").replace("/", "_").replace("\\", "_")
+
+# ------------------------------
 # タイトル・利用者区分
 # ------------------------------
 st.title("小学校 週の指導計画（週案）管理システム（クラウド版）")
@@ -505,65 +665,72 @@ if role == "教員":
     st.header("📘 週案の作成・提出（教員用）")
     st.caption(f"提出先年度：{current_school_year}（管理職が設定）")
 
-    teacher = st.text_input("教員名")
-    teacher_type = st.radio("勤務形態", ["担任", "専科（音楽・家庭科など）"])
+    teacher = st.text_input("教員名", value=st.session_state.get("teacher_name", ""))
+    if teacher:
+        st.session_state["teacher_name"] = teacher
 
+    teacher_type = st.radio("勤務形態", ["担任", "専科（音楽・家庭科など）"])
     grade = st.selectbox("基準学年", list(STANDARD_HOURS.keys()))
     base_grade = grade
+
     class_name = st.text_input("自分の担任学級（例：3-1）※担任でなければ空欄可")
     week = st.date_input("対象週（週の初日：月曜日など）", value=date.today())
+    week_str = str(week)
 
-    # ---- 下書き一覧 → 復元
+    # 下書き一覧（復元）
     st.markdown("---")
-    st.subheader("🗂 下書きの復元（教員用）")
-    st.caption("※ 同一『教員×週×年度』の下書きは1件（上書き保存）です。")
+    st.subheader("🗂 下書き一覧（復元）")
+    if teacher.strip():
+        drafts = list_my_drafts(current_school_year, teacher.strip())
+        if drafts:
+            options = []
+            id_map = {}
+            for (wid, w, g, c, ttype, _pj, subat) in drafts:
+                label = f"ID:{wid} / 週:{w} / {g} {c or ''} / {ttype} / 保存:{subat}"
+                options.append(label)
+                id_map[label] = wid
 
-    def list_my_drafts(school_year: str, teacher_name: str):
-        if not teacher_name.strip():
-            return []
-        cur.execute("""
-            SELECT school_year, teacher, week, grade, class, teacher_type, saved_at
-            FROM weekly_drafts
-            WHERE school_year=? AND teacher=?
-            ORDER BY saved_at DESC
-        """, (school_year, teacher_name.strip()))
-        return cur.fetchall()
-
-    def load_draft(school_year: str, teacher_name: str, week_str: str):
-        cur.execute("""
-            SELECT plan_json, grade, class, teacher_type
-            FROM weekly_drafts
-            WHERE school_year=? AND teacher=? AND week=?
-            LIMIT 1
-        """, (school_year, teacher_name.strip(), week_str))
-        row = cur.fetchone()
-        if not row:
-            return None
-        plan_json, g, c, tt = row
-        try:
-            plan = json.loads(plan_json) if plan_json else {}
-        except Exception:
-            plan = {}
-        return {"plan": plan, "grade": g, "class": c, "teacher_type": tt}
-
-    drafts = list_my_drafts(current_school_year, teacher or "")
-    if drafts:
-        options = [f"{r[2]}（{r[3]} {r[4]} / {r[5]}） 保存:{r[6]}" for r in drafts]
-        pick = st.selectbox("自分の下書き一覧", ["（選択してください）"] + options)
-        if pick != "（選択してください）":
-            idx = options.index(pick)
-            week_str = drafts[idx][2]
-            if st.button("🔄 選択した下書きを復元する"):
-                loaded = load_draft(current_school_year, teacher or "", week_str)
-                if loaded:
-                    st.session_state["restore_draft_plan"] = loaded["plan"]
-                    st.session_state["restore_draft_week"] = week_str
-                    st.success("下書きを復元しました。下の時間割入力欄に反映します。")
+            sel = st.selectbox("自分の下書きを選択して復元", ["（選択しない）"] + options)
+            if sel != "（選択しない）" and st.button("📥 この下書きを復元する"):
+                row = load_plan_by_id(id_map[sel])
+                if row:
+                    _id, _sy, _t, _g, _c, _tt, _wk, _pj, _stt = row
+                    try:
+                        plan = json.loads(_pj) if _pj else {}
+                    except Exception:
+                        plan = {}
+                    st.session_state["restore_plan"] = plan
+                    st.session_state["restore_meta"] = {"grade": _g, "class": _c, "teacher_type": _tt, "week": _wk}
+                    st.success("復元データを読み込みました。ページが再描画されます。")
                     st.rerun()
+        else:
+            st.caption("下書きはまだありません。")
     else:
-        st.info("（下書きはまだありません。教員名を入力すると一覧が出ます）")
+        st.caption("※ 教員名を入力すると下書き一覧が表示されます。")
 
-    # ---- 担任／専科の選択肢
+    restore_plan = st.session_state.get("restore_plan")
+    restore_meta = st.session_state.get("restore_meta") or {}
+
+    if restore_meta.get("week"):
+        try:
+            week = date.fromisoformat(restore_meta["week"])
+            week_str = str(week)
+        except Exception:
+            pass
+
+    if restore_meta.get("grade") in STANDARD_HOURS:
+        base_grade = restore_meta["grade"]
+
+    if restore_meta.get("teacher_type") in ["担任", "専科（音楽・家庭科など）"]:
+        teacher_type = restore_meta["teacher_type"]
+
+    if restore_meta.get("class") is not None:
+        class_name = restore_meta.get("class") or class_name
+
+    # UI再反映（見た目上の値）
+    st.info("下書きを復元した場合、入力欄は「表の中身」を優先して復元されています。")
+
+    # 教科選択肢
     if teacher_type == "担任":
         subject_options = ["（空欄）"] + get_subjects_for_grade(base_grade)
         st.caption("※ 担任は、その学年で扱う教科のみ選択できます。")
@@ -579,24 +746,23 @@ if role == "教員":
         else:
             st.caption("※ 学級が未入力の場合、学級欄は空欄のままとなります。")
 
-    # ---- 復元した下書きがあれば timetable の初期値に利用
-    restored_plan = st.session_state.get("restore_draft_plan")
-    restored_week = st.session_state.get("restore_draft_week")
-    restore_timetable = {}
-    if restored_plan and restored_week == str(week):
-        restore_timetable = restored_plan.get("timetable", {}) or {}
-
+    st.markdown("---")
     st.markdown("#### 一週間の時間割を入力してください（表形式）")
-    st.caption("行：校時／列：曜日。各マスで「学級（専科）」「教科等」「内容」を入力します。")
-    st.caption("※ 学校行事を 3/8・6/8 で入力した場合、そのコマの『残り教科』を入力できます（合計1）。")
+    st.caption("行：校時／列：曜日。各マスで「学校行事(3/8等)＋残り教科」「内容」を入力します。")
 
     timetable = {}
+    if restore_plan and isinstance(restore_plan, dict):
+        timetable = restore_plan.get("timetable") or {}
+        if not isinstance(timetable, dict):
+            timetable = {}
 
+    # header
     header_cols = st.columns(COLUMN_WIDTHS)
     header_cols[0].write("　")
     for i, day in enumerate(DAYS, start=1):
         header_cols[i].write(f"**{day}**")
 
+    # 入力テーブル
     for period in PERIODS:
         if not any(PERIOD_MINUTES[day][period] > 0 for day in DAYS):
             continue
@@ -606,213 +772,233 @@ if role == "教員":
 
         for j, day in enumerate(DAYS, start=1):
             timetable.setdefault(day, {})
-
             minutes = PERIOD_MINUTES[day][period]
-            restore_cell = (restore_timetable.get(day, {}).get(period, {}) or {})
 
             with row_cols[j]:
                 if minutes <= 0:
                     st.write("―")
-                    cell = {"class": "", "subject": "（空欄）", "content": "", "parts": []}
-                else:
-                    st.caption(f"{minutes}分")
+                    timetable[day][period] = {"class": "", "event": {"fraction": 0.0, "content": ""}, "main": {"subject": "（空欄）", "content": ""}}
+                    continue
 
-                    # class
-                    if teacher_type.startswith("専科"):
-                        if class_candidates:
-                            klass = st.selectbox(
-                                "学級",
-                                ["（未選択）"] + class_candidates,
-                                key=f"{day}_{period}_class",
-                                index=(
-                                    (["（未選択）"] + class_candidates).index(restore_cell.get("class"))
-                                    if restore_cell.get("class") in (["（未選択）"] + class_candidates) else 0
-                                ),
-                                label_visibility="collapsed",
-                            )
-                            klass = "" if klass == "（未選択）" else klass
-                        else:
-                            klass = ""
-                    else:
-                        klass = class_name
+                st.caption(f"{minutes}分")
 
-                    # subject
-                    restore_subject = restore_cell.get("subject", "（空欄）")
-                    if restore_subject not in subject_options:
-                        restore_subject = "（空欄）"
+                # 既存値（復元）
+                old_cell = timetable.get(day, {}).get(period, {}) or {}
+                old_class = old_cell.get("class", "")
+                old_event = old_cell.get("event") or {}
+                old_main = old_cell.get("main") or {}
 
-                    subject = st.selectbox(
-                        "教科等",
-                        subject_options,
-                        key=f"{day}_{period}_subject",
-                        index=subject_options.index(restore_subject),
-                        label_visibility="collapsed",
-                    )
+                old_event_frac = float(old_event.get("fraction", 0.0) or 0.0)
+                # ラベル推定
+                event_label_default = "なし"
+                for lbl, val in EVENT_FRACTIONS:
+                    if abs(val - old_event_frac) < 1e-9:
+                        event_label_default = lbl
+                        break
 
-                    # content
-                    restore_content = restore_cell.get("content", "")
-                    content = st.text_area(
-                        "内容",
-                        key=f"{day}_{period}_content",
-                        value=restore_content,
-                        height=60,
-                        label_visibility="collapsed",
-                    )
+                old_event_content = (old_event.get("content") or "").strip()
+                old_main_subject = (old_main.get("subject") or old_cell.get("subject") or "（空欄）").strip()
+                old_main_content = (old_main.get("content") or old_cell.get("content") or "").strip()
 
-                    # parts（学校行事の分割対応）
-                    parts = None
-                    if subject == "学校行事":
-                        # restore fraction
-                        restore_parts = restore_cell.get("parts") or []
-                        restore_frac = 1.0
-                        if restore_parts:
-                            for p in restore_parts:
-                                if p.get("subject") == "学校行事":
-                                    restore_frac = float(p.get("fraction", 1.0))
-
-                        if abs(restore_frac - 3/8) < 1e-9:
-                            restore_label = "3/8"
-                        elif abs(restore_frac - 6/8) < 1e-9:
-                            restore_label = "6/8"
-                        else:
-                            restore_label = "8/8（1）"
-
-                        frac_label = st.selectbox(
-                            "学校行事の計上",
-                            ["8/8（1）", "3/8", "6/8"],
-                            key=f"{day}_{period}_event_frac",
-                            index=["8/8（1）", "3/8", "6/8"].index(restore_label),
+                # 学級（専科のみ選択）
+                if teacher_type.startswith("専科"):
+                    if class_candidates:
+                        klass = st.selectbox(
+                            "学級",
+                            ["（未選択）"] + class_candidates,
+                            index=(["（未選択）"] + class_candidates).index(old_class) if old_class in (["（未選択）"] + class_candidates) else 0,
+                            key=f"{day}_{period}_class",
                             label_visibility="collapsed",
                         )
-
-                        if frac_label == "3/8":
-                            frac_event = 3/8
-                        elif frac_label == "6/8":
-                            frac_event = 6/8
-                        else:
-                            frac_event = 1.0
-
-                        if frac_event < 1.0:
-                            remain_frac = 1.0 - frac_event
-                            st.caption(f"このコマの残り：{int(round(remain_frac*8))}/8（自動）")
-
-                            # restore remain
-                            restore_rem_subj = "（空欄）"
-                            restore_rem_cont = ""
-                            for p in restore_parts:
-                                if p.get("subject") != "学校行事":
-                                    restore_rem_subj = p.get("subject", "（空欄）")
-                                    restore_rem_cont = p.get("content", "")
-                                    break
-
-                            remain_opts = ["（空欄）"] + (get_subjects_for_grade(base_grade) if teacher_type == "担任" else ALL_SUBJECTS)
-                            if restore_rem_subj not in remain_opts:
-                                restore_rem_subj = "（空欄）"
-
-                            remain_subject = st.selectbox(
-                                "残りの教科等",
-                                remain_opts,
-                                key=f"{day}_{period}_remain_subject",
-                                index=remain_opts.index(restore_rem_subj),
-                                label_visibility="collapsed",
-                            )
-                            remain_content = st.text_area(
-                                "残りの内容",
-                                key=f"{day}_{period}_remain_content",
-                                value=restore_rem_cont,
-                                height=60,
-                                label_visibility="collapsed",
-                            )
-
-                            parts = [
-                                {"class": klass, "subject": "学校行事", "content": content, "fraction": frac_event},
-                                {"class": klass, "subject": remain_subject, "content": remain_content, "fraction": remain_frac},
-                            ]
-                        else:
-                            parts = [{"class": klass, "subject": "学校行事", "content": content, "fraction": 1.0}]
+                        klass = "" if klass == "（未選択）" else klass
                     else:
-                        parts = [{"class": klass, "subject": subject, "content": content, "fraction": 1.0}]
+                        klass = ""
+                else:
+                    klass = class_name
 
-                    cell = {"class": klass, "subject": subject, "content": content, "parts": parts}
+                # 学校行事 3/8等
+                event_label = st.selectbox(
+                    "学校行事（配分）",
+                    [x[0] for x in EVENT_FRACTIONS],
+                    index=[x[0] for x in EVENT_FRACTIONS].index(event_label_default),
+                    key=f"{day}_{period}_eventfrac",
+                    label_visibility="collapsed",
+                )
+                event_frac = fraction_label_to_value(event_label)
+                event_minutes = minutes * event_frac
+                remain_minutes = minutes - event_minutes
 
-            timetable[day][period] = cell
+                # 学校行事内容
+                event_content = ""
+                if event_frac > 0:
+                    event_content = st.text_area(
+                        "学校行事 内容",
+                        value=old_event_content,
+                        key=f"{day}_{period}_eventcont",
+                        height=45,
+                        label_visibility="collapsed",
+                    )
 
-    # ---- 集計表示（基準学年）
+                # 残り教科（event 3/8・6/8 の場合は必須）
+                main_subject = "（空欄）"
+                main_content = ""
+                if remain_minutes > 0:
+                    st.caption(f"残り：{int(round(remain_minutes))}分")
+                    main_subject = st.selectbox(
+                        "残り枠の教科等",
+                        subject_options,
+                        index=subject_options.index(old_main_subject) if old_main_subject in subject_options else 0,
+                        key=f"{day}_{period}_mainsubj",
+                        label_visibility="collapsed",
+                    )
+                    main_content = st.text_area(
+                        "残り枠の内容",
+                        value=old_main_content,
+                        key=f"{day}_{period}_maincont",
+                        height=55,
+                        label_visibility="collapsed",
+                    )
+
+                timetable[day][period] = {
+                    "class": klass,
+                    "event": {"fraction": event_frac, "content": event_content},
+                    "main": {"subject": main_subject, "content": main_content},
+                }
+
+    # ------------------------------
+    # 入力バリデーション（学校行事 3/8・6/8 の場合は残り教科必須）
+    # ------------------------------
+    def validate_timetable_for_submit(tt: dict, base_g: str):
+        errors = []
+        for day in DAYS:
+            for period in PERIODS:
+                slot_minutes = PERIOD_MINUTES.get(day, {}).get(period, 0)
+                if slot_minutes <= 0:
+                    continue
+                cell = (tt or {}).get(day, {}).get(period)
+                if not cell:
+                    continue
+
+                event = cell.get("event") or {}
+                frac = float(event.get("fraction", 0.0) or 0.0)
+                frac = max(0.0, min(1.0, frac))
+
+                if 0.0 < frac < 1.0:
+                    # 残り教科が必須
+                    main = cell.get("main") or {}
+                    subj = (main.get("subject") or "").strip()
+                    if not subj or subj == "（空欄）":
+                        errors.append(f"{day} {period}: 学校行事が {int(round(frac*8))}/8 なので、残り教科の入力が必要です。")
+
+                # 8/8 の時は残り教科は不要（あっても無視されるわけではないが remain=0）
+        return errors
+
+    # 週の教科別合計（基準学年）
     week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
     subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
 
+    st.markdown("---")
     st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
     for s in get_subjects_for_grade(base_grade):
-        mins = int(round(subject_minutes_this_grade.get(s, 0)))
-        st.write(f"- {s}: {mins} 分")
+        st.write(f"- {s}: {int(round(subject_minutes_this_grade.get(s, 0)))} 分")
 
-    # ---- 下書き：上書き保存
+    # ------------------------------
+    # 教員用：この週案をCSVで保存（非常時用）
+    # ------------------------------
     st.markdown("---")
-    st.subheader("📝 下書き（上書き保存）")
-    st.caption("※ 同一『教員×週×年度』は1件です。保存すると自動的に上書きされます。")
+    st.subheader("💾 自分の週案を保存（CSV）")
+    st.caption("※ 未提出でも保存できます（非常時用の控え）。")
 
-    def save_draft(school_year: str, teacher_name: str, week_str: str, grade: str, class_name: str, teacher_type: str, plan: dict):
-        cur.execute("""
-            INSERT INTO weekly_drafts (school_year, teacher, week, grade, class, teacher_type, plan_json, saved_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, DATETIME('now'))
-            ON CONFLICT(school_year, teacher, week) DO UPDATE SET
-                grade=excluded.grade,
-                class=excluded.class,
-                teacher_type=excluded.teacher_type,
-                plan_json=excluded.plan_json,
-                saved_at=DATETIME('now')
-        """, (
-            school_year, teacher_name.strip(), week_str, grade, class_name, teacher_type,
-            json.dumps(plan, ensure_ascii=False)
-        ))
-        conn.commit()
+    slot_rows = []
+    for day in DAYS:
+        for period in PERIODS:
+            mins = PERIOD_MINUTES.get(day, {}).get(period, 0)
+            if mins <= 0:
+                continue
+            cell = (timetable or {}).get(day, {}).get(period, {}) or {}
+            segs = cell_to_segments(cell, mins)
+            if not segs:
+                # 空欄でも1行出す
+                slot_rows.append({
+                    "年度": current_school_year, "教員": teacher, "基準学年": base_grade, "担任学級": class_name,
+                    "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period,
+                    "分": mins, "学級": cell.get("class",""), "教科等": "", "内容": ""
+                })
+            else:
+                for seg in segs:
+                    slot_rows.append({
+                        "年度": current_school_year,
+                        "教員": teacher,
+                        "基準学年": base_grade,
+                        "担任学級": class_name,
+                        "勤務形態": teacher_type,
+                        "週": week_str,
+                        "曜日": day,
+                        "校時": period,
+                        "分": int(round(seg.get("minutes", 0))),
+                        "学級": seg.get("class", ""),
+                        "教科等": seg.get("subject", ""),
+                        "内容": seg.get("content", ""),
+                    })
 
-    col_d1, col_d2 = st.columns([2, 3])
-    with col_d1:
-        if st.button("💾 下書きを上書き保存"):
+    df_my = pd.DataFrame(slot_rows)
+    my_csv = df_my.to_csv(index=False).encode("utf-8-sig")
+    today_str = date.today().strftime("%Y%m%d")
+    my_name = f"{teacher or 'teacher'}_{base_grade}_{week_str}_{today_str}_my_weekly_plan.csv".replace("/", "_")
+
+    st.download_button(
+        label="⬇️ この週案をCSVで保存",
+        data=my_csv,
+        file_name=my_name,
+        mime="text/csv",
+    )
+
+    # ------------------------------
+    # 下書き保存 / 提出
+    # ------------------------------
+    st.markdown("---")
+    st.subheader("📝 下書き・提出")
+
+    col_a, col_b = st.columns(2)
+
+    with col_a:
+        if st.button("💾 下書きを上書き保存（同一 教員×週×年度 は1件）"):
             if not teacher.strip():
-                st.error("教員名を入力してください（下書き保存に必要です）。")
+                st.error("教員名を入力してください（下書きの紐づけに必要です）。")
             else:
                 plan = {"timetable": timetable}
-                save_draft(current_school_year, teacher, str(week), base_grade, class_name, teacher_type, plan)
-                st.success("下書きを保存（上書き）しました。")
+                upsert_draft(current_school_year, teacher.strip(), base_grade, class_name, teacher_type, week_str, plan)
+                st.success("下書きを保存しました。")
 
-    with col_d2:
-        st.info("下書きを復元したい場合は、画面上部の『下書き一覧』から選んで復元できます。")
+    with col_b:
+        if st.button("✅ この内容で管理職へ提出する"):
+            if not teacher.strip():
+                st.error("教員名を入力してください。")
+            else:
+                errors = validate_timetable_for_submit(timetable, base_grade)
+                if errors:
+                    st.error("入力に不備があります。下記を修正してください：")
+                    for e in errors:
+                        st.write(f"- {e}")
+                else:
+                    plan = {"timetable": timetable}
+                    submit_plan_from_current(current_school_year, teacher.strip(), base_grade, class_name, teacher_type, week_str, plan)
+                    st.success("週案を提出しました。管理職の承認をお待ちください。")
 
-    # ---- 印刷
-    st.markdown("#### 📄 印刷・PDF保存用レイアウト（教員用）")
-    if st.checkbox("この週案を印刷用に表示する"):
+    # ------------------------------
+    # 印刷（完成版）
+    # ------------------------------
+    st.markdown("---")
+    st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
+
+    if st.checkbox("この週案を印刷用に表示する（列幅が広い表示）"):
         df_print = build_print_df(timetable)
         if df_print.empty:
             st.info("有効なコマがありません。")
         else:
-            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher}／{week} の週案（印刷用）**")
-            st.table(df_print)
-            st.info("ブラウザの印刷機能から PDF 保存・印刷を行ってください。")
-
-    # ---- 提出
-    if st.button("✅ この内容で管理職へ提出する"):
-        if not teacher.strip():
-            st.error("教員名を入力してください（提出に必要です）。")
-        else:
-            plan = {"timetable": timetable}
-            cur.execute("""
-                INSERT INTO weekly_plans
-                  (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at)
-                VALUES
-                  (?, ?, ?, ?, ?, ?, ?, '提出', DATETIME('now'))
-            """, (
-                current_school_year,
-                teacher.strip(),
-                base_grade,
-                class_name,
-                teacher_type,
-                str(week),
-                json.dumps(plan, ensure_ascii=False),
-            ))
-            conn.commit()
-            st.success("週案を提出しました。管理職の承認をお待ちください。")
+            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher}／{week_str} の週案（印刷用）**")
+            st.dataframe(df_print, use_container_width=True, height=520)
+            st.info("ブラウザの印刷機能（Ctrl+P）から PDF 保存・印刷を行ってください。")
 
 # ======================================================
 # 管理職画面
@@ -824,14 +1010,20 @@ if role == "管理職":
 
     # 年度候補（DBから集める）
     years = {get_current_school_year(), DEFAULT_SCHOOL_YEAR}
+
     try:
         cur.execute("SELECT DISTINCT school_year FROM weekly_plans")
-        years |= {r[0] for r in cur.fetchall() if r and r[0]}
+        for (sy,) in cur.fetchall():
+            if sy:
+                years.add(sy)
     except Exception:
         pass
+
     try:
         cur.execute("SELECT DISTINCT school_year FROM hours_total")
-        years |= {r[0] for r in cur.fetchall() if r and r[0]}
+        for (sy,) in cur.fetchall():
+            if sy:
+                years.add(sy)
     except Exception:
         pass
 
@@ -842,7 +1034,7 @@ if role == "管理職":
         view_year = st.selectbox(
             "表示する年度",
             years_list,
-            index=years_list.index(get_current_school_year()) if get_current_school_year() in years_list else 0
+            index=years_list.index(get_current_school_year()) if get_current_school_year() in years_list else 0,
         )
     with coly2:
         st.write("現在の年度")
@@ -858,33 +1050,45 @@ if role == "管理職":
     if st.button("➕ 新年度を追加して『現在の年度』にする"):
         if new_year.strip():
             set_current_school_year(new_year.strip())
-            ensure_hours_seed(new_year.strip())
             st.success(f"新年度「{new_year.strip()}」を現在の年度にしました。")
             st.rerun()
 
-    # 年度の種まき
-    ensure_hours_seed(view_year)
+    # 年度初期化（未初期化なら自動）
+    st.markdown("---")
+    st.subheader("🧩 年度の初期化（0行の種まき）")
+    if not is_year_initialized(view_year):
+        st.warning(f"{view_year} は未初期化です。年間累積の行を0で作成します。")
+        if st.button(f"✅ {view_year} を初期化する（0行作成）"):
+            init_year_hours_zero(view_year, initialized_by="管理職")
+            st.success(f"{view_year} を初期化しました。")
+            st.rerun()
+    else:
+        st.info(f"✅ {view_year} は初期化済みです。")
 
     st.markdown("---")
     st.header("📝 提出された週案一覧（管理職用）")
     st.caption("※ この画面の一覧・集計は「表示する年度」に基づきます。")
 
-    cur.execute("""
+    cur.execute(
+        """
         SELECT id, school_year, teacher, grade, class, teacher_type, week,
                plan_json, status, submitted_at, approved_at, approved_by
         FROM weekly_plans
         WHERE school_year=?
         ORDER BY id DESC
-    """, (view_year,))
+        """,
+        (view_year,),
+    )
     all_rows = cur.fetchall()
 
-    counts = {"提出": 0, "承認": 0, "差戻": 0}
+    counts = {"下書き": 0, "提出": 0, "承認": 0, "差戻": 0}
     for r in all_rows:
         stt = r[8]
         if stt in counts:
             counts[stt] += 1
 
     st.markdown("#### 状態別件数")
+    st.write(f"- 下書き：{counts['下書き']} 件")
     st.write(f"- 提出：{counts['提出']} 件")
     st.write(f"- 承認：{counts['承認']} 件")
     st.write(f"- 差戻：{counts['差戻']} 件")
@@ -896,7 +1100,7 @@ if role == "管理職":
     st.markdown("#### 表示フィルタ")
     col_f1, col_f2, col_f3 = st.columns(3)
     with col_f1:
-        filter_status = st.selectbox("状態", ["すべて", "提出", "承認", "差戻"])
+        filter_status = st.selectbox("状態", ["すべて", "下書き", "提出", "承認", "差戻"])
     with col_f2:
         grade_filter = st.selectbox("学年", ["すべて"] + grade_list)
     with col_f3:
@@ -918,7 +1122,7 @@ if role == "管理職":
     if week_filter != "すべて":
         rows = [r for r in rows if r[6] == week_filter]
     if only_unapproved:
-        rows = [r for r in rows if r[8] != "承認"]
+        rows = [r for r in rows if r[8] != "承認" and r[8] != "下書き"]
 
     if not rows:
         st.info("該当する週案はありません。")
@@ -929,13 +1133,11 @@ if role == "管理職":
         wid, school_year, teacher, grade, class_name, teacher_type, week,
         plan_json, status, submitted_at, approved_at, approved_by
     ) in rows:
-
         try:
             plan = json.loads(plan_json) if plan_json else {}
         except Exception:
             plan = {}
-
-        timetable = plan.get("timetable", {}) or {}
+        timetable = plan.get("timetable", {}) if isinstance(plan, dict) else {}
         week_minutes_all = compute_week_subject_minutes(timetable, grade)
 
         badge_html = status_badge(status)
@@ -954,72 +1156,33 @@ if role == "管理職":
                 st.write("- 承認：未承認")
 
             st.markdown("#### 一週間の時間割（学級＋教科等＋内容）")
-            header_cols = st.columns(COLUMN_WIDTHS)
-            header_cols[0].write("　")
-            for i, day in enumerate(DAYS, start=1):
-                header_cols[i].write(f"**{day}**")
-
-            for period in PERIODS:
-                if not any(PERIOD_MINUTES[day][period] > 0 for day in DAYS):
-                    continue
-                row_cols = st.columns(COLUMN_WIDTHS)
-                row_cols[0].write(f"**{period}**")
-                for j, day in enumerate(DAYS, start=1):
-                    with row_cols[j]:
-                        mins = PERIOD_MINUTES[day][period]
-                        if mins <= 0:
-                            st.write("―")
-                            continue
-                        cell = timetable.get(day, {}).get(period, {}) or {}
-                        klass0 = cell.get("class", "")
-                        parts = cell.get("parts") or [{
-                            "class": klass0,
-                            "subject": cell.get("subject", ""),
-                            "content": cell.get("content", ""),
-                            "fraction": 1.0
-                        }]
-
-                        st.caption(f"{mins}分")
-                        lines = []
-                        for p in parts:
-                            subj = (p.get("subject") or "").strip()
-                            if subj in ["", "（空欄）"]:
-                                continue
-                            frac = float(p.get("fraction", 1.0))
-                            part_min = int(round(mins * frac))
-                            kk = (p.get("class") or "").strip() or klass0
-                            cont = (p.get("content") or "").strip()
-                            head = f"{kk} " if kk else ""
-                            head += subj
-                            if cont:
-                                lines.append(f"[{part_min}分] {head}\n{cont}")
-                            else:
-                                lines.append(f"[{part_min}分] {head}")
-                        st.write("\n\n".join(lines) if lines else "")
-
-            st.markdown("#### 📄 印刷・PDF保存用レイアウト（この週案）")
             df_print = build_print_df(timetable)
             if df_print.empty:
                 st.info("有効なコマがありません。")
             else:
-                st.table(df_print)
-                st.caption("ブラウザの印刷機能から PDF 保存・印刷してください。")
+                st.dataframe(df_print, use_container_width=True, height=520)
+
+            st.caption("（印刷はブラウザの印刷機能から）")
 
             col1, col2 = st.columns(2)
             with col1:
                 if st.button(f"✅ 承認する（ID:{wid}）", key=f"approve_{wid}"):
                     if status != "承認":
+                        # 承認時：年度view_yearで累積に反映
                         for g in week_minutes_all:
                             for subj, mins in week_minutes_all[g].items():
                                 add_hours(view_year, g, subj, mins)
 
-                        cur.execute("""
+                        cur.execute(
+                            """
                             UPDATE weekly_plans
                             SET status='承認',
                                 approved_at=DATETIME('now'),
                                 approved_by=?
                             WHERE id=?
-                        """, ("管理職", wid))
+                            """,
+                            ("管理職", wid),
+                        )
                         conn.commit()
                         st.success("承認しました。年間累積時数に反映済みです。")
                         st.rerun()
@@ -1037,8 +1200,8 @@ if role == "管理職":
                         st.info("すでに差戻済みです。")
 
     # 年間累積（年度view_year）
+    st.markdown("---")
     st.header(f"📊 年間累積時数の状況（{view_year}）")
-    ensure_hours_seed(view_year)
 
     for g in STANDARD_HOURS.keys():
         st.subheader(f"{g}の時数状況")
@@ -1052,110 +1215,79 @@ if role == "管理職":
             row = cur.fetchone()
             used = float(row[0]) if row else 0.0
             remain = std - used
-            rows_table.append({
-                "教科等": subj,
-                "標準（45分コマ）": round(std, 1),
-                "実施累積（45分コマ）": round(used, 1),
-                "残り（45分コマ）": round(remain, 1),
-            })
+            rows_table.append(
+                {
+                    "教科等": subj,
+                    "標準（45分コマ）": round(std, 2),
+                    "実施累積（45分コマ）": round(used, 2),
+                    "残り（45分コマ）": round(remain, 2),
+                }
+            )
         st.table(rows_table)
 
-    # ------------------------------------------------------
-    # 学校行事 内訳（年累計：承認済み週案から集計）
-    # ------------------------------------------------------
-    st.markdown("---")
-    st.header(f"🎪 学校行事の内訳（{view_year}・承認済みから集計）")
-    st.caption("3/8・6/8・8/8（=1）の回数と、実分（分）を表示します。")
-
-    cur.execute("""
-        SELECT grade, plan_json
-        FROM weekly_plans
-        WHERE school_year=? AND status='承認'
-    """, (view_year,))
-    approved_plans = cur.fetchall()
-
-    agg = {g: {"3/8": 0, "6/8": 0, "1": 0, "minutes": 0.0} for g in STANDARD_HOURS.keys()}
-    for base_g, pjson in approved_plans:
-        try:
-            plan = json.loads(pjson) if pjson else {}
-        except Exception:
-            plan = {}
-        tt = plan.get("timetable", {}) or {}
-        bd = compute_school_event_breakdown(tt, base_g)
-        for gg, d in bd.items():
-            agg.setdefault(gg, {"3/8": 0, "6/8": 0, "1": 0, "minutes": 0.0})
-            agg[gg]["3/8"] += d["3/8"]
-            agg[gg]["6/8"] += d["6/8"]
-            agg[gg]["1"] += d["1"]
-            agg[gg]["minutes"] += d["minutes"]
-
-    rows_event = []
-    for gg in STANDARD_HOURS.keys():
-        rows_event.append({
-            "学年": gg,
-            "学校行事 3/8 回数": agg.get(gg, {}).get("3/8", 0),
-            "学校行事 6/8 回数": agg.get(gg, {}).get("6/8", 0),
-            "学校行事 8/8(=1) 回数": agg.get(gg, {}).get("1", 0),
-            "学校行事 合計（分）": int(round(agg.get(gg, {}).get("minutes", 0.0))),
-        })
-    df_event = pd.DataFrame(rows_event)
-    st.table(df_event)
-
-    event_csv = df_event.to_csv(index=False).encode("utf-8-sig")
-    today_str = date.today().strftime("%Y%m%d")
-    st.download_button(
-        label="⬇️ 学校行事 内訳CSVをダウンロード",
-        data=event_csv,
-        file_name=f"{view_year.replace(' ', '')}_学校行事内訳_{today_str}.csv".replace("/", "_"),
-        mime="text/csv",
-    )
-
-    # ------------------------------------------------------
-    # 🧰 バックアップ（Excel/CSV）
-    # ------------------------------------------------------
-    st.markdown("---")
-    st.header("🧰 バックアップ（Excel/CSV ダウンロード）")
-    st.caption(f"対象年度：{view_year}　（管理職のみ実行）")
+    # ======================================================
+    # 🧰 バックアップ（Excel/CSV）※管理職のみ（年度view_yearで出力）
+    # ======================================================
+    def ensure_backup_log_table():
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS backup_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                school_year TEXT,
+                created_at TEXT,
+                created_by TEXT,
+                filename TEXT
+            )
+            """
+        )
+        conn.commit()
 
     def get_last_backup_date(school_year: str):
+        ensure_backup_log_table()
         cur.execute(
             "SELECT created_at FROM backup_log WHERE school_year=? ORDER BY id DESC LIMIT 1",
-            (school_year,)
+            (school_year,),
         )
         row = cur.fetchone()
         return row[0] if row else None
 
     def log_backup(school_year: str, created_by: str, filename: str):
+        ensure_backup_log_table()
         cur.execute(
-            "INSERT INTO backup_log (school_year, created_at, created_by, filename) VALUES (?, DATETIME('now'), ?, ?)",
-            (school_year, created_by, filename)
+            "INSERT INTO backup_log (school_year, created_at, created_by, filename) "
+            "VALUES (?, DATETIME('now'), ?, ?)",
+            (school_year, created_by, filename),
         )
         conn.commit()
 
     def fetch_all_weekly_plans_for_year(school_year: str):
-        cur.execute("""
+        cur.execute(
+            """
             SELECT id, school_year, teacher, grade, class, teacher_type, week, plan_json, status,
                    submitted_at, approved_at, approved_by
             FROM weekly_plans
             WHERE school_year=?
             ORDER BY id DESC
-        """, (school_year,))
+            """,
+            (school_year,),
+        )
         return cur.fetchall()
 
     def fetch_hours_total_for_year(school_year: str):
-        ensure_hours_seed(school_year)
-        cur.execute("""
+        cur.execute(
+            """
             SELECT school_year, grade, subject, consumed
             FROM hours_total
             WHERE school_year=?
             ORDER BY grade, subject
-        """, (school_year,))
+            """,
+            (school_year,),
+        )
         return cur.fetchall()
 
     def flatten_plans_to_rows(plans):
         plan_rows = []
         slot_rows = []
-
         for (wid, sy, teacher, grade, class_name, teacher_type, week, plan_json, status,
              submitted_at, approved_at, approved_by) in plans:
 
@@ -1177,24 +1309,16 @@ if role == "管理職":
                 plan = json.loads(plan_json) if plan_json else {}
             except Exception:
                 plan = {}
-            timetable = plan.get("timetable", {}) or {}
+            timetable = plan.get("timetable", {}) if isinstance(plan, dict) else {}
 
             for day in DAYS:
                 for period in PERIODS:
-                    cell = timetable.get(day, {}).get(period, {}) or {}
-                    base_minutes = PERIOD_MINUTES.get(day, {}).get(period, 0)
-                    klass0 = cell.get("class", "")
-                    parts = cell.get("parts") or [{
-                        "class": klass0,
-                        "subject": cell.get("subject", ""),
-                        "content": cell.get("content", ""),
-                        "fraction": 1.0
-                    }]
-
-                    # partsを1行ずつ出す（分割対応）
-                    for idx, p in enumerate(parts, start=1):
-                        frac = float(p.get("fraction", 1.0))
-                        part_minutes = base_minutes * frac
+                    slot_minutes = PERIOD_MINUTES.get(day, {}).get(period, 0)
+                    if slot_minutes <= 0:
+                        continue
+                    cell = (timetable or {}).get(day, {}).get(period, {}) or {}
+                    segs = cell_to_segments(cell, slot_minutes)
+                    if not segs:
                         slot_rows.append({
                             "plan_id": wid,
                             "school_year": sy,
@@ -1203,17 +1327,32 @@ if role == "管理職":
                             "base_grade": grade,
                             "base_class": class_name,
                             "teacher_type": teacher_type,
-                            "status": status,
                             "day": day,
                             "period": period,
-                            "slot_minutes_base": base_minutes,
-                            "part_no": idx,
-                            "fraction": frac,
-                            "minutes": round(part_minutes, 2),
-                            "class": p.get("class", "") or klass0,
-                            "subject": p.get("subject", ""),
-                            "content": p.get("content", ""),
+                            "minutes": slot_minutes,
+                            "class": cell.get("class", ""),
+                            "subject": "",
+                            "content": "",
+                            "status": status,
                         })
+                    else:
+                        for seg in segs:
+                            slot_rows.append({
+                                "plan_id": wid,
+                                "school_year": sy,
+                                "week": week,
+                                "teacher": teacher,
+                                "base_grade": grade,
+                                "base_class": class_name,
+                                "teacher_type": teacher_type,
+                                "day": day,
+                                "period": period,
+                                "minutes": int(round(seg.get("minutes", 0))),
+                                "class": seg.get("class", ""),
+                                "subject": seg.get("subject", ""),
+                                "content": seg.get("content", ""),
+                                "status": status,
+                            })
 
         return pd.DataFrame(plan_rows), pd.DataFrame(slot_rows)
 
@@ -1245,8 +1384,9 @@ if role == "管理職":
         bio.seek(0)
         return bio.getvalue()
 
-    def safe_year_str(s: str):
-        return str(s).replace(" ", "").replace("/", "_").replace("\\", "_")
+    st.markdown("---")
+    st.header("🧰 バックアップ（Excel/CSV ダウンロード）")
+    st.caption(f"対象年度：{view_year}　（管理職のみ実行）")
 
     last_backup = get_last_backup_date(view_year)
     if last_backup:
@@ -1254,9 +1394,25 @@ if role == "管理職":
     else:
         st.warning("まだバックアップが作成されていません。初回は必ず作成してください。")
 
+    ensure_backup_log_table()
+    cur.execute(
+        """
+        SELECT julianday('now') - julianday(created_at)
+        FROM backup_log
+        WHERE school_year=?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (view_year,),
+    )
+    row = cur.fetchone()
+    if row and row[0] is not None and float(row[0]) >= 7:
+        st.warning("前回バックアップから7日以上経過しています。バックアップを作成してください。")
+
     st.session_state.setdefault("backup_excel_bytes", None)
     st.session_state.setdefault("backup_csv_pack", None)
     st.session_state.setdefault("backup_filename", None)
+
+    created_by = "管理職"
 
     if st.button("🟦 バックアップを作成（今日の日付で生成）"):
         plans = fetch_all_weekly_plans_for_year(view_year)
@@ -1270,21 +1426,19 @@ if role == "管理職":
 
         excel_bytes = to_excel_bytes({
             "週案一覧": df_plans,
-            "時間割（コマ明細_parts）": df_slots,
+            "時間割（コマ明細）": df_slots,
             "年間累積（進捗）": df_hours,
-            "学校行事内訳": df_event,
         })
 
         st.session_state["backup_excel_bytes"] = excel_bytes
         st.session_state["backup_csv_pack"] = {
             "weekly_plans": df_plans.to_csv(index=False).encode("utf-8-sig"),
-            "weekly_slots_parts": df_slots.to_csv(index=False).encode("utf-8-sig"),
+            "weekly_slots": df_slots.to_csv(index=False).encode("utf-8-sig"),
             "hours_progress": df_hours.to_csv(index=False).encode("utf-8-sig"),
-            "event_breakdown": df_event.to_csv(index=False).encode("utf-8-sig"),
         }
         st.session_state["backup_filename"] = filename
 
-        log_backup(view_year, created_by="管理職", filename=filename)
+        log_backup(view_year, created_by=created_by, filename=filename)
         st.success("バックアップを作成しました。下のボタンからダウンロードしてください。")
 
     if st.session_state["backup_excel_bytes"]:
@@ -1295,6 +1449,7 @@ if role == "管理職":
             file_name=st.session_state["backup_filename"] or f"{safe_year_str(view_year)}_weekly_plan_backup_{today_str}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
+
         csv_pack = st.session_state["backup_csv_pack"] or {}
         st.download_button(
             label="⬇️ 週案一覧（CSV）",
@@ -1303,9 +1458,9 @@ if role == "管理職":
             mime="text/csv",
         )
         st.download_button(
-            label="⬇️ 時間割（コマ明細_parts）（CSV）",
-            data=csv_pack.get("weekly_slots_parts", b""),
-            file_name=f"{safe_year_str(view_year)}_weekly_slots_parts_{today_str}.csv",
+            label="⬇️ 時間割（コマ明細）（CSV）",
+            data=csv_pack.get("weekly_slots", b""),
+            file_name=f"{safe_year_str(view_year)}_weekly_slots_{today_str}.csv",
             mime="text/csv",
         )
         st.download_button(
@@ -1314,16 +1469,10 @@ if role == "管理職":
             file_name=f"{safe_year_str(view_year)}_hours_progress_{today_str}.csv",
             mime="text/csv",
         )
-        st.download_button(
-            label="⬇️ 学校行事内訳（CSV）",
-            data=csv_pack.get("event_breakdown", b""),
-            file_name=f"{safe_year_str(view_year)}_event_breakdown_{today_str}.csv",
-            mime="text/csv",
-        )
 
-    # ------------------------------------------------------
+    # ======================================================
     # 🏛 区教委提出用（年間時数 まとめCSV）
-    # ------------------------------------------------------
+    # ======================================================
     st.markdown("---")
     st.header("🏛 区教委提出用（年間時数 まとめCSV）")
     st.caption(f"対象年度：{view_year}（学年×教科の標準・累積・残りを1本に整形）")
@@ -1338,7 +1487,6 @@ if role == "管理職":
             used = float(consumed_map.get((gg, ss), 0.0))
             remain = std - used
             pct = (used / std * 100.0) if std > 0 else 0.0
-
             out_rows.append({
                 "年度": view_year,
                 "学年": gg,
@@ -1354,18 +1502,14 @@ if role == "管理職":
     ]
 
     with st.expander("内容を表示（確認用）", expanded=False):
-        st.dataframe(df_submit, use_container_width=True)
+        st.dataframe(df_submit, use_container_width=True, height=420)
 
     today_str = date.today().strftime("%Y%m%d")
     submit_csv = df_submit.to_csv(index=False).encode("utf-8-sig")
 
-    def to_reiwa_short(year_str: str) -> str:
-        m = re.search(r"令和\s*([0-9]+)\s*年度", year_str)
-        return f"R{m.group(1)}" if m else year_str.replace("年度", "")
-
     school_short = "東小松川小学校"
     reiwa_short = to_reiwa_short(view_year)
-    submit_name = f"{reiwa_short}_年間指導時数集計_{school_short}_{today_str}.csv".replace("/", "_")
+    submit_name = f"{reiwa_short}_年間指導時数集計_{school_short}_{today_str}.csv"
 
     st.download_button(
         label="⬇️ 区教委提出用CSVをダウンロード",
