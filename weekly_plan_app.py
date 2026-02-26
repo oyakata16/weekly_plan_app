@@ -400,13 +400,14 @@ def status_badge(status: str) -> str:
     return f'<span class="status-label {cls}">{status}</span>'
 
 # ------------------------------
-# 印刷用 DataFrame（parts対応：同一マスに複数行）
+# 印刷用 DataFrame（parts対応：同一マスに複数段表示）
 # ------------------------------
 def build_print_df(timetable: dict) -> pd.DataFrame:
     rows = []
     index = []
 
     for period in PERIODS:
+        # その校時が全曜日0分ならスキップ
         if not any(PERIOD_MINUTES[day][period] > 0 for day in DAYS):
             continue
 
@@ -417,35 +418,44 @@ def build_print_df(timetable: dict) -> pd.DataFrame:
                 row.append("")
                 continue
 
-            cell = timetable.get(day, {}).get(period, {}) or {}
-            klass0 = cell.get("class", "")
-            parts = cell.get("parts") or [{
-                "class": klass0,
-                "subject": cell.get("subject", ""),
-                "content": cell.get("content", ""),
-                "fraction": 1.0
-            }]
+            cell = (timetable.get(day, {}) or {}).get(period, {}) or {}
+            klass0 = (cell.get("class") or "").strip()
+
+            # partsがなければ互換として単一化
+            parts = cell.get("parts")
+            if not parts:
+                parts = [{
+                    "class": klass0,
+                    "subject": (cell.get("subject") or "").strip(),
+                    "content": (cell.get("content") or "").strip(),
+                    "fraction": 1.0
+                }]
 
             lines = []
             for p in parts:
                 subj = (p.get("subject") or "").strip()
                 if subj in ["", "（空欄）"]:
                     continue
+
                 frac = float(p.get("fraction", 1.0))
                 part_min = int(round(mins * frac))
+
                 kk = (p.get("class") or "").strip() or klass0
-                cc = (p.get("content") or "").strip()
+                cont = (p.get("content") or "").strip()
 
                 head = ""
                 if kk:
                     head += f"{kk} "
                 head += subj
 
-                if cc:
-                    lines.append(f"[{part_min}分] {head}\n{cc}")
+                # 1段目：分＋学級＋教科
+                if cont:
+                    # 2段目：内容（さらに下に）
+                    lines.append(f"[{part_min}分] {head}\n{cont}")
                 else:
                     lines.append(f"[{part_min}分] {head}")
 
+            # partsが複数なら「空行」を挟んで見やすく
             row.append("\n\n".join(lines) if lines else "")
 
         rows.append(row)
@@ -455,7 +465,6 @@ def build_print_df(timetable: dict) -> pd.DataFrame:
         return pd.DataFrame()
 
     return pd.DataFrame(rows, index=index, columns=DAYS)
-
 # ------------------------------
 # 管理職ログイン
 # ------------------------------
