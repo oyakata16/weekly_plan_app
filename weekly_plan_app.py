@@ -896,7 +896,7 @@ if remain_minutes > 0:
         label_visibility="collapsed",
     )
                 # 学校行事 3/8等（常に表示）
-                event_opts = [x[0] for x in EVENT_FRACTIONS]
+    event_opts = [x[0] for x in EVENT_FRACTIONS]
                 event_label = st.selectbox(
                     "学校行事（配分）",
                     event_opts,
