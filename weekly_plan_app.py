@@ -828,7 +828,73 @@ if role == "教員":
                         klass = ""
                 else:
                     klass = class_name
+# 学校行事（割合）
+event_label = st.selectbox(
+    "学校行事（配分）",
+    [x[0] for x in EVENT_FRACTIONS],
+    index=[x[0] for x in EVENT_FRACTIONS].index(event_label_default),
+    key=f"{day}_{period}_eventfrac",
+    label_visibility="collapsed",
+)
 
+event_frac = fraction_label_to_value(event_label)
+event_minutes = minutes * event_frac
+remain_minutes = minutes - event_minutes
+
+
+# ------------------------
+# 学校行事（教科表示）
+# ------------------------
+event_content = ""
+
+if event_frac > 0:
+
+    st.caption("学校行事")
+
+    # 学校行事は教科固定
+    st.selectbox(
+        "学校行事",
+        ["学校行事"],
+        index=0,
+        key=f"{day}_{period}_eventsubject",
+        label_visibility="collapsed",
+    )
+
+    event_content = st.text_area(
+        "学校行事 内容",
+        value=old_event_content,
+        key=f"{day}_{period}_eventcont",
+        height=45,
+        label_visibility="collapsed",
+    )
+
+
+# ------------------------
+# 残り教科
+# ------------------------
+main_subject = "（空欄）"
+main_content = ""
+
+if remain_minutes > 0:
+
+    st.caption(f"残り：{int(round(remain_minutes))}分")
+
+    main_subject = st.selectbox(
+        "残り枠の教科等",
+        subject_options,
+        index=subject_options.index(old_main_subject)
+        if old_main_subject in subject_options else 0,
+        key=f"{day}_{period}_mainsubj",
+        label_visibility="collapsed",
+    )
+
+    main_content = st.text_area(
+        "残り枠の内容",
+        value=old_main_content,
+        key=f"{day}_{period}_maincont",
+        height=55,
+        label_visibility="collapsed",
+    )
                 # 学校行事 3/8等（常に表示）
                 event_opts = [x[0] for x in EVENT_FRACTIONS]
                 event_label = st.selectbox(
