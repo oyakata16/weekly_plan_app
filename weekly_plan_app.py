@@ -888,38 +888,39 @@ if remain_minutes > 0:
         label_visibility="collapsed",
     )
 
-    main_content = st.text_area(
-        "残り枠の内容",
-        value=old_main_content,
-        key=f"{day}_{period}_maincont",
-        height=55,
+main_content = st.text_area(
+    "残り枠の内容",
+    value=old_main_content,
+    key=f"{day}_{period}_maincont",
+    height=55,
+    label_visibility="collapsed",
+)
+
+# 学校行事 3/8等（常に表示）
+event_opts = [x[0] for x in EVENT_FRACTIONS]
+
+event_label = st.selectbox(
+    "学校行事（配分）",
+    event_opts,
+    index=event_opts.index(event_label_default) if event_label_default in event_opts else 0,
+    key=f"{day}_{period}_eventfrac",
+    label_visibility="collapsed",
+)
+event_frac = fraction_label_to_value(event_label)
+
+event_minutes = minutes * event_frac
+remain_minutes = minutes - event_minutes
+
+# 学校行事内容
+event_content = ""
+if event_frac > 0:
+    event_content = st.text_area(
+        "学校行事 内容",
+        value=old_event_content,
+        key=f"{day}_{period}_eventcont",
+        height=45,
         label_visibility="collapsed",
     )
-                # 学校行事 3/8等（常に表示）
-                event_opts = [x[0] for x in EVENT_FRACTIONS]
-    
-                event_label = st.selectbox(
-                    "学校行事（配分）",
-                    event_opts,
-                    index=event_opts.index(event_label_default) if event_label_default in event_opts else 0,
-                    key=f"{day}_{period}_eventfrac",
-                    label_visibility="collapsed",
-                )
-                event_frac = fraction_label_to_value(event_label)
-
-                event_minutes = minutes * event_frac
-                remain_minutes = minutes - event_minutes
-
-                # 学校行事内容
-                event_content = ""
-                if event_frac > 0:
-                    event_content = st.text_area(
-                        "学校行事 内容",
-                        value=old_event_content,
-                        key=f"{day}_{period}_eventcont",
-                        height=45,
-                        label_visibility="collapsed",
-                    )
 
                 # 残り教科（event 3/8・6/8 の場合は必須）
                 main_subject = "（空欄）"
