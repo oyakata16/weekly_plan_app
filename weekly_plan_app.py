@@ -922,28 +922,55 @@ if event_frac > 0:
         label_visibility="collapsed",
     )
 
-                # 残り教科（event 3/8・6/8 の場合は必須）
-                main_subject = "（空欄）"
-                main_content = ""
-                if remain_minutes > 0:
-                    # 8分の何（表示用）
-                    e8 = fraction_to_8th(event_frac)
-                    r8 = 8 - e8
-                    st.caption(f"残り：{int(round(remain_minutes))}分（{r8}/8）")
+# -------------------------
+# 学校行事（配分）は常に表示
+# -------------------------
+event_opts = [x[0] for x in EVENT_FRACTIONS]
+event_label = st.selectbox(
+    "学校行事（配分）",
+    event_opts,
+    index=event_opts.index(event_label_default) if event_label_default in event_opts else 0,
+    key=f"{day}_{period}_eventfrac",
+    label_visibility="collapsed",
+)
+event_frac = fraction_label_to_value(event_label)
 
-                    main_subject = st.selectbox(
-                        "残り枠の教科等",
-                        subject_options,
-                        index=subject_options.index(old_main_subject) if old_main_subject in subject_options else 0,
-                        key=f"{day}_{period}_mainsubj",
-                        label_visibility="collapsed",
-                    )
-                    main_content = st.text_area(
-                        "残り枠の内容",
-                        value=old_main_content,
-                        key=f"{day}_{period}_maincont",
-                        height=55,
-                        label_visibility="collapsed",
+event_minutes = minutes * event_frac
+remain_minutes = minutes - event_minutes
+
+# 学校行事内容（配分がある時だけ）
+event_content = ""
+if event_frac > 0:
+    event_content = st.text_area(
+        "学校行事 内容",
+        value=old_event_content,
+        key=f"{day}_{period}_eventcont",
+        height=45,
+        label_visibility="collapsed",
+    )
+
+# -------------------------
+# 残り教科（残りがある場合だけ表示）
+# -------------------------
+main_subject = "（空欄）"
+main_content = ""
+if remain_minutes > 0:
+    st.caption(f"残り：{int(round(remain_minutes))}分")
+
+    main_subject = st.selectbox(
+        "残り枠の教科等",
+        subject_options,
+        index=subject_options.index(old_main_subject) if old_main_subject in subject_options else 0,
+        key=f"{day}_{period}_mainsubj",
+        label_visibility="collapsed",
+    )
+    main_content = st.text_area(
+        "残り枠の内容",
+        value=old_main_content,
+        key=f"{day}_{period}_maincont",
+        height=55,
+        label_visibility="collapsed",
+    )
                     )
                 else:
                     st.caption("このコマは学校行事で全量（8/8）")
