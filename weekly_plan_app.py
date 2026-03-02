@@ -633,6 +633,21 @@ def list_my_drafts(school_year: str, teacher: str):
 
 
 def load_plan_by_id(wid: int):
+    # ------------------------------
+# 前週コピー用：直近の週案取得
+# ------------------------------
+def fetch_latest_plan_before_week(school_year: str, teacher: str, week_str: str):
+    cur.execute(
+        """
+        SELECT plan_json, week, status
+        FROM weekly_plans
+        WHERE school_year=? AND teacher=? AND week < ?
+        ORDER BY week DESC, id DESC
+        LIMIT 1
+        """,
+        (school_year, teacher, week_str),
+    )
+    return cur.fetchone()
     cur.execute(
         """
         SELECT id, school_year, teacher, grade, class, teacher_type, week, plan_json, status
@@ -801,6 +816,38 @@ if role == "教員":
         value=st.session_state.get("week_date", date.today()),
         key="week_date_input",
     )
+    # ------------------------------
+# 前週コピー機能
+# ------------------------------
+st.markdown("### ⏪ 前週コピー")
+
+if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
+    if not teacher.strip():
+        st.error("教員名を入力してください。")
+    else:
+        row = fetch_latest_plan_before_week(
+            current_school_year,
+            teacher.strip(),
+            week_str
+        )
+
+        if not row:
+            st.warning("前週データが見つかりませんでした。")
+        else:
+            plan_json, prev_week, prev_status = row
+
+            try:
+                prev_plan = json.loads(plan_json) if plan_json else {}
+            except Exception:
+                prev_plan = {}
+
+            prev_tt = prev_plan.get("timetable", {})
+
+            # 現在の週へコピー
+            st.session_state["restore_plan"] = {"timetable": prev_tt}
+
+            st.success(f"前週（{prev_week}）をコピーしました。")
+            st.rerun()
     st.session_state["week_date"] = week
     week_str = str(week)
 
