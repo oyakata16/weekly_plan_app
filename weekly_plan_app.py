@@ -633,7 +633,18 @@ def list_my_drafts(school_year: str, teacher: str):
 
 
 def load_plan_by_id(wid: int):
-    # ------------------------------
+    cur.execute(
+        """
+        SELECT id, school_year, teacher, grade, class, teacher_type, week, plan_json, status
+        FROM weekly_plans
+        WHERE id=?
+        """,
+        (wid,),
+    )
+    return cur.fetchone()
+
+
+# ------------------------------
 # 前週コピー用：直近の週案取得
 # ------------------------------
 def fetch_latest_plan_before_week(school_year: str, teacher: str, week_str: str):
