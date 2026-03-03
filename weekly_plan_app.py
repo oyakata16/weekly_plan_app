@@ -1,4 +1,4 @@
-# weekly_plan_app.py （印刷完成版・完全動作：学校行事UI復元＋二段入力 安定版）
+# weekly_plan_app.py （安全な完全版：前週コピー＋横コピー＋時数警告 統合）
 # 担任＋専科ハイブリッド＋年度切替＋下書き(上書き保存/復元)
 # 学校行事：3/8・6/8・8/8(=1)＋残り教科入力（合計8/8必須）
 # 印刷：同一マス2段表示＋st.dataframe＋印刷CSS
@@ -7,7 +7,7 @@
 
 import streamlit as st
 import sqlite3
-from datetime import date
+from datetime import date, timedelta
 import json
 import pandas as pd
 import io
@@ -659,15 +659,6 @@ def fetch_latest_plan_before_week(school_year: str, teacher: str, week_str: str)
         (school_year, teacher, week_str),
     )
     return cur.fetchone()
-    cur.execute(
-        """
-        SELECT id, school_year, teacher, grade, class, teacher_type, week, plan_json, status
-        FROM weekly_plans
-        WHERE id=?
-        """,
-        (wid,),
-    )
-    return cur.fetchone()
 
 
 def submit_plan_from_current(
@@ -722,6 +713,21 @@ def to_reiwa_short(year_str: str) -> str:
 
 def safe_year_str(s: str):
     return str(s).replace(" ", "").replace("/", "_").replace("\\", "_")
+
+
+# ------------------------------
+# 横コピー（同一曜日で、ある校時→下の校時へコピー）
+# ------------------------------
+def copy_row_down(timetable: dict, day: str, from_period: str, to_period: str):
+    tt = timetable or {}
+    tt.setdefault(day, {})
+    src = tt.get(day, {}).get(from_period)
+    if not src:
+        return timetable
+    # ディープコピー
+    copied = json.loads(json.dumps(src, ensure_ascii=False))
+    tt[day][to_period] = copied
+    return tt
 
 
 # ------------------------------
@@ -827,40 +833,39 @@ if role == "教員":
         value=st.session_state.get("week_date", date.today()),
         key="week_date_input",
     )
-    # ------------------------------
-# 前週コピー機能
-# ------------------------------
-st.markdown("### ⏪ 前週コピー")
-
-if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
-    if not teacher.strip():
-        st.error("教員名を入力してください。")
-    else:
-        row = fetch_latest_plan_before_week(
-            current_school_year,
-            teacher.strip(),
-            week_str
-        )
-
-        if not row:
-            st.warning("前週データが見つかりませんでした。")
-        else:
-            plan_json, prev_week, prev_status = row
-
-            try:
-                prev_plan = json.loads(plan_json) if plan_json else {}
-            except Exception:
-                prev_plan = {}
-
-            prev_tt = prev_plan.get("timetable", {})
-
-            # 現在の週へコピー
-            st.session_state["restore_plan"] = {"timetable": prev_tt}
-
-            st.success(f"前週（{prev_week}）をコピーしました。")
-            st.rerun()
     st.session_state["week_date"] = week
     week_str = str(week)
+
+    # ------------------------------
+    # 前週コピー
+    # ------------------------------
+    st.markdown("---")
+    st.markdown("### ⏪ 前週コピー")
+
+    if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
+        if not teacher.strip():
+            st.error("教員名を入力してください。")
+        else:
+            row = fetch_latest_plan_before_week(
+                current_school_year,
+                teacher.strip(),
+                week_str
+            )
+
+            if not row:
+                st.warning("前週データが見つかりませんでした。")
+            else:
+                plan_json, prev_week, prev_status = row
+                try:
+                    prev_plan = json.loads(plan_json) if plan_json else {}
+                except Exception:
+                    prev_plan = {}
+                prev_tt = prev_plan.get("timetable", {})
+
+                # 現在の週へコピー
+                st.session_state["restore_plan"] = {"timetable": prev_tt}
+                st.success(f"前週（{prev_week}）をコピーしました。")
+                st.rerun()
 
     # 教科選択肢
     if teacher_type == "担任":
@@ -949,9 +954,7 @@ if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
                 else:
                     klass = class_name
 
-                # =========================================================
-                # ★ここが修正点：学校行事（配分）を常に表示し、残り教科も表示
-                # =========================================================
+                # 学校行事（配分）＋残り教科
                 event_opts = [x[0] for x in EVENT_FRACTIONS]
                 event_label = st.selectbox(
                     "学校行事（配分）",
@@ -1003,6 +1006,27 @@ if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
                     "main": {"subject": main_subject, "content": main_content},
                 }
 
+        # 横コピー（その曜日だけ、上の校時→次の校時へ）
+        st.caption("（任意）横コピー：同じ曜日で、この校時の内容を次の校時へコピーできます。")
+        col_copy = st.columns([1, 1, 1, 3])
+        with col_copy[0]:
+            copy_day = st.selectbox("曜日", DAYS, key=f"copyday_{period}")
+        with col_copy[1]:
+            from_p = st.selectbox("元", PERIODS, index=PERIODS.index(period), key=f"copyfrom_{period}")
+        with col_copy[2]:
+            to_p = st.selectbox(
+                "先",
+                PERIODS,
+                index=min(PERIODS.index(period) + 1, len(PERIODS) - 1),
+                key=f"copyto_{period}",
+            )
+        with col_copy[3]:
+            if st.button("➡ この曜日だけコピー", key=f"copybtn_{period}"):
+                timetable = copy_row_down(timetable, copy_day, from_p, to_p)
+                st.session_state["restore_plan"] = {"timetable": timetable}
+                st.success(f"{copy_day}の「{from_p}」→「{to_p}」へコピーしました。")
+                st.rerun()
+
     # ------------------------------
     # 入力バリデーション（学校行事 3/8・6/8 の場合は残り教科必須）
     # ------------------------------
@@ -1040,6 +1064,26 @@ if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
     st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
     for s in get_subjects_for_grade(base_grade):
         st.write(f"- {s}: {int(round(subject_minutes_this_grade.get(s, 0)))} 分")
+
+    # ------------------------------
+    # 年間時数の警告（教員向け：目安）
+    # ------------------------------
+    st.markdown("---")
+    st.subheader("⚠ 年間時数の目安（警告）")
+    st.caption("※ 管理職承認後に年間累積へ反映されます。ここは参考表示です。")
+    warn_rows = []
+    for subj in get_subjects_for_grade(base_grade):
+        std = float(STANDARD_HOURS[base_grade].get(subj, 0))
+        cur.execute(
+            "SELECT consumed FROM hours_total WHERE school_year=? AND grade=? AND subject=?",
+            (current_school_year, base_grade, subj),
+        )
+        row = cur.fetchone()
+        used = float(row[0]) if row else 0.0
+        remain = std - used
+        warn_rows.append({"教科等": subj, "標準(45分コマ)": std, "現時点累積(45分コマ)": round(used, 2), "残り": round(remain, 2)})
+    df_warn = pd.DataFrame(warn_rows)
+    st.dataframe(df_warn, use_container_width=True, height=260)
 
     # ------------------------------
     # 教員用：この週案をCSVで保存（非常時用）
