@@ -1,13 +1,17 @@
-# weekly_plan_app.py （安全な完全版：前週コピー＋横コピー＋時数警告 統合）
+# weekly_plan_app.py （印刷完成版・完全動作：学校行事UI復元＋二段入力 安定版）
 # 担任＋専科ハイブリッド＋年度切替＋下書き(上書き保存/復元)
 # 学校行事：3/8・6/8・8/8(=1)＋残り教科入力（合計8/8必須）
 # 印刷：同一マス2段表示＋st.dataframe＋印刷CSS
 # バックアップ（管理職のみ）＋区教委提出用 年間時数まとめCSV
+#
+# ★追加（今回）：
+# ① 時間割入力の「枠線（表の罫線）」：各マスを st.container(border=True) で囲む＋CSSで黒枠強制
+# ② 「学校行事（配分）」と「残り教科等」を色ラベルで明確に区別
 # ===========================================
 
 import streamlit as st
 import sqlite3
-from datetime import date, timedelta
+from datetime import date
 import json
 import pandas as pd
 import io
@@ -64,6 +68,39 @@ st.markdown(
         word-break: break-word !important;
         line-height: 1.35 !important;
         vertical-align: top !important;
+    }
+
+    /* --- 既存：時間割入力セルの見出し用（色分け） --- */
+    .tt-sec-event{
+        background: #fff4cc;
+        border: 1px solid #f2d27a;
+        padding: 4px 6px;
+        border-radius: 6px;
+        font-size: 12px;
+        margin: 6px 0 6px 0;
+        font-weight: 700;
+    }
+    .tt-sec-main{
+        background: #e7f0ff;
+        border: 1px solid #b5cffc;
+        padding: 4px 6px;
+        border-radius: 6px;
+        font-size: 12px;
+        margin: 6px 0 6px 0;
+        font-weight: 700;
+    }
+    .tt-mini{
+        font-size: 12px !important;
+        color: #555;
+        margin-top: 2px;
+        margin-bottom: 6px;
+    }
+
+    /* --- 時間割入力の枠線（st.container(border=True) を“表の枠”として強調） --- */
+    div[data-testid="stVerticalBlockBorderWrapper"]{
+        border: 1px solid #000 !important;
+        border-radius: 0px !important;
+        box-shadow: none !important;
     }
 
     @media print {
@@ -361,12 +398,6 @@ def add_hours(school_year: str, grade: str, subject: str, minutes: float):
 
 # ------------------------------
 # timetable セルの正規化（学校行事＋残り教科 2段）
-# cell構造（保存）:
-#   {
-#     "class": "...",
-#     "event": {"fraction": 0.375, "content": "..."}  # optional
-#     "main": {"subject": "...", "content": "..."}   # optional（残り枠）
-#   }
 # ------------------------------
 def cell_to_segments(cell: dict, slot_minutes: float):
     if not cell or slot_minutes <= 0:
@@ -429,8 +460,7 @@ def cell_to_segments(cell: dict, slot_minutes: float):
 
 
 # ------------------------------
-# 1週間分のコマを学年×教科ごとに分数集計（学校行事＋残り教科対応）
-# 戻り: { "3年": { "国語": 分, "学校行事": 分, ... }, ... }
+# 1週間分のコマを学年×教科ごとに分数集計
 # ------------------------------
 def compute_week_subject_minutes(timetable: dict, base_grade: str):
     result = {}
@@ -716,21 +746,6 @@ def safe_year_str(s: str):
 
 
 # ------------------------------
-# 横コピー（同一曜日で、ある校時→下の校時へコピー）
-# ------------------------------
-def copy_row_down(timetable: dict, day: str, from_period: str, to_period: str):
-    tt = timetable or {}
-    tt.setdefault(day, {})
-    src = tt.get(day, {}).get(from_period)
-    if not src:
-        return timetable
-    # ディープコピー
-    copied = json.loads(json.dumps(src, ensure_ascii=False))
-    tt[day][to_period] = copied
-    return tt
-
-
-# ------------------------------
 # タイトル・利用者区分
 # ------------------------------
 st.title("小学校 週の指導計画（週案）管理システム（クラウド版）")
@@ -837,11 +852,9 @@ if role == "教員":
     week_str = str(week)
 
     # ------------------------------
-    # 前週コピー
+    # 前週コピー機能
     # ------------------------------
-    st.markdown("---")
     st.markdown("### ⏪ 前週コピー")
-
     if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
         if not teacher.strip():
             st.error("教員名を入力してください。")
@@ -856,14 +869,17 @@ if role == "教員":
                 st.warning("前週データが見つかりませんでした。")
             else:
                 plan_json, prev_week, prev_status = row
+
                 try:
                     prev_plan = json.loads(plan_json) if plan_json else {}
                 except Exception:
                     prev_plan = {}
+
                 prev_tt = prev_plan.get("timetable", {})
 
                 # 現在の週へコピー
                 st.session_state["restore_plan"] = {"timetable": prev_tt}
+
                 st.success(f"前週（{prev_week}）をコピーしました。")
                 st.rerun()
 
@@ -913,119 +929,103 @@ if role == "教員":
             minutes = PERIOD_MINUTES[day][period]
 
             with row_cols[j]:
-                if minutes <= 0:
-                    st.write("―")
-                    timetable[day][period] = {
-                        "class": "",
-                        "event": {"fraction": 0.0, "content": ""},
-                        "main": {"subject": "（空欄）", "content": ""},
-                    }
-                    continue
+                with st.container(border=True):
+                    if minutes <= 0:
+                        st.write("―")
+                        timetable[day][period] = {
+                            "class": "",
+                            "event": {"fraction": 0.0, "content": ""},
+                            "main": {"subject": "（空欄）", "content": ""},
+                        }
+                        continue
 
-                st.caption(f"{minutes}分")
+                    st.markdown(f"<div class='tt-mini'>{minutes}分</div>", unsafe_allow_html=True)
 
-                old_cell = timetable.get(day, {}).get(period, {}) or {}
-                old_class = (old_cell.get("class") or "").strip()
-                old_event = old_cell.get("event") or {}
-                old_main = old_cell.get("main") or {}
+                    old_cell = timetable.get(day, {}).get(period, {}) or {}
+                    old_class = (old_cell.get("class") or "").strip()
+                    old_event = old_cell.get("event") or {}
+                    old_main = old_cell.get("main") or {}
 
-                old_event_frac = float(old_event.get("fraction", 0.0) or 0.0)
-                event_label_default = fraction_value_to_label(old_event_frac)
+                    old_event_frac = float(old_event.get("fraction", 0.0) or 0.0)
+                    event_label_default = fraction_value_to_label(old_event_frac)
 
-                old_event_content = (old_event.get("content") or "").strip()
-                old_main_subject = (old_main.get("subject") or old_cell.get("subject") or "（空欄）").strip()
-                old_main_content = (old_main.get("content") or old_cell.get("content") or "").strip()
+                    old_event_content = (old_event.get("content") or "").strip()
+                    old_main_subject = (old_main.get("subject") or old_cell.get("subject") or "（空欄）").strip()
+                    old_main_content = (old_main.get("content") or old_cell.get("content") or "").strip()
 
-                # 学級（専科のみ選択）
-                if teacher_type.startswith("専科"):
-                    if class_candidates:
-                        opts = ["（未選択）"] + class_candidates
-                        idx = opts.index(old_class) if old_class in opts else 0
-                        klass = st.selectbox(
-                            "学級",
-                            opts,
-                            index=idx,
-                            key=f"{day}_{period}_class",
+                    # 学級（専科のみ選択）
+                    if teacher_type.startswith("専科"):
+                        if class_candidates:
+                            opts = ["（未選択）"] + class_candidates
+                            idx = opts.index(old_class) if old_class in opts else 0
+                            klass = st.selectbox(
+                                "学級",
+                                opts,
+                                index=idx,
+                                key=f"{day}_{period}_class",
+                                label_visibility="collapsed",
+                            )
+                            klass = "" if klass == "（未選択）" else klass
+                        else:
+                            klass = ""
+                    else:
+                        klass = class_name
+
+                    # 学校行事（配分）
+                    event_opts = [x[0] for x in EVENT_FRACTIONS]
+                    st.markdown('<div class="tt-sec-event">学校行事（配分）</div>', unsafe_allow_html=True)
+                    event_label = st.selectbox(
+                        "学校行事（配分）",
+                        event_opts,
+                        index=event_opts.index(event_label_default) if event_label_default in event_opts else 0,
+                        key=f"{day}_{period}_eventfrac",
+                        label_visibility="collapsed",
+                    )
+                    event_frac = fraction_label_to_value(event_label)
+
+                    event_minutes = minutes * event_frac
+                    remain_minutes = minutes - event_minutes
+
+                    # 学校行事内容（配分がある時だけ）
+                    event_content = ""
+                    if event_frac > 0:
+                        st.markdown('<div class="tt-sec-event">学校行事（内容）</div>', unsafe_allow_html=True)
+                        event_content = st.text_area(
+                            "学校行事 内容",
+                            value=old_event_content,
+                            key=f"{day}_{period}_eventcont",
+                            height=45,
                             label_visibility="collapsed",
                         )
-                        klass = "" if klass == "（未選択）" else klass
-                    else:
-                        klass = ""
-                else:
-                    klass = class_name
 
-                # 学校行事（配分）＋残り教科
-                event_opts = [x[0] for x in EVENT_FRACTIONS]
-                event_label = st.selectbox(
-                    "学校行事（配分）",
-                    event_opts,
-                    index=event_opts.index(event_label_default) if event_label_default in event_opts else 0,
-                    key=f"{day}_{period}_eventfrac",
-                    label_visibility="collapsed",
-                )
-                event_frac = fraction_label_to_value(event_label)
+                    # 残り教科（残りがある場合だけ表示）
+                    main_subject = "（空欄）"
+                    main_content = ""
+                    if remain_minutes > 0:
+                        st.markdown(
+                            f'<div class="tt-sec-main">残り：{int(round(remain_minutes))}分（教科等）</div>',
+                            unsafe_allow_html=True,
+                        )
+                        main_subject = st.selectbox(
+                            "残り枠の教科等",
+                            subject_options,
+                            index=subject_options.index(old_main_subject) if old_main_subject in subject_options else 0,
+                            key=f"{day}_{period}_mainsubj",
+                            label_visibility="collapsed",
+                        )
+                        main_content = st.text_area(
+                            "残り枠の内容",
+                            value=old_main_content,
+                            key=f"{day}_{period}_maincont",
+                            height=55,
+                            label_visibility="collapsed",
+                        )
 
-                event_minutes = minutes * event_frac
-                remain_minutes = minutes - event_minutes
-
-                # 学校行事内容（配分がある時だけ）
-                event_content = ""
-                if event_frac > 0:
-                    st.caption("学校行事")
-                    event_content = st.text_area(
-                        "学校行事 内容",
-                        value=old_event_content,
-                        key=f"{day}_{period}_eventcont",
-                        height=45,
-                        label_visibility="collapsed",
-                    )
-
-                # 残り教科（残りがある場合だけ表示）
-                main_subject = "（空欄）"
-                main_content = ""
-                if remain_minutes > 0:
-                    st.caption(f"残り：{int(round(remain_minutes))}分")
-                    main_subject = st.selectbox(
-                        "残り枠の教科等",
-                        subject_options,
-                        index=subject_options.index(old_main_subject) if old_main_subject in subject_options else 0,
-                        key=f"{day}_{period}_mainsubj",
-                        label_visibility="collapsed",
-                    )
-                    main_content = st.text_area(
-                        "残り枠の内容",
-                        value=old_main_content,
-                        key=f"{day}_{period}_maincont",
-                        height=55,
-                        label_visibility="collapsed",
-                    )
-
-                timetable[day][period] = {
-                    "class": klass,
-                    "event": {"fraction": event_frac, "content": event_content},
-                    "main": {"subject": main_subject, "content": main_content},
-                }
-
-        # 横コピー（その曜日だけ、上の校時→次の校時へ）
-        st.caption("（任意）横コピー：同じ曜日で、この校時の内容を次の校時へコピーできます。")
-        col_copy = st.columns([1, 1, 1, 3])
-        with col_copy[0]:
-            copy_day = st.selectbox("曜日", DAYS, key=f"copyday_{period}")
-        with col_copy[1]:
-            from_p = st.selectbox("元", PERIODS, index=PERIODS.index(period), key=f"copyfrom_{period}")
-        with col_copy[2]:
-            to_p = st.selectbox(
-                "先",
-                PERIODS,
-                index=min(PERIODS.index(period) + 1, len(PERIODS) - 1),
-                key=f"copyto_{period}",
-            )
-        with col_copy[3]:
-            if st.button("➡ この曜日だけコピー", key=f"copybtn_{period}"):
-                timetable = copy_row_down(timetable, copy_day, from_p, to_p)
-                st.session_state["restore_plan"] = {"timetable": timetable}
-                st.success(f"{copy_day}の「{from_p}」→「{to_p}」へコピーしました。")
-                st.rerun()
+                    timetable[day][period] = {
+                        "class": klass,
+                        "event": {"fraction": event_frac, "content": event_content},
+                        "main": {"subject": main_subject, "content": main_content},
+                    }
 
     # ------------------------------
     # 入力バリデーション（学校行事 3/8・6/8 の場合は残り教科必須）
@@ -1064,26 +1064,6 @@ if role == "教員":
     st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
     for s in get_subjects_for_grade(base_grade):
         st.write(f"- {s}: {int(round(subject_minutes_this_grade.get(s, 0)))} 分")
-
-    # ------------------------------
-    # 年間時数の警告（教員向け：目安）
-    # ------------------------------
-    st.markdown("---")
-    st.subheader("⚠ 年間時数の目安（警告）")
-    st.caption("※ 管理職承認後に年間累積へ反映されます。ここは参考表示です。")
-    warn_rows = []
-    for subj in get_subjects_for_grade(base_grade):
-        std = float(STANDARD_HOURS[base_grade].get(subj, 0))
-        cur.execute(
-            "SELECT consumed FROM hours_total WHERE school_year=? AND grade=? AND subject=?",
-            (current_school_year, base_grade, subj),
-        )
-        row = cur.fetchone()
-        used = float(row[0]) if row else 0.0
-        remain = std - used
-        warn_rows.append({"教科等": subj, "標準(45分コマ)": std, "現時点累積(45分コマ)": round(used, 2), "残り": round(remain, 2)})
-    df_warn = pd.DataFrame(warn_rows)
-    st.dataframe(df_warn, use_container_width=True, height=260)
 
     # ------------------------------
     # 教員用：この週案をCSVで保存（非常時用）
