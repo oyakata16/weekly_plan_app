@@ -1,4 +1,4 @@
-# weekly_plan_app.py （完全安全版・印刷完成版・神機能①〜⑤統合）
+# weekly_plan_app.py （東小松川小学校 完全神アプリ v2）
 # ①前週コピー完全版（安全修正）
 # ②時数不足警告（年度×学年×教科）
 # ③授業入替（安全UI：入替ボタン方式）
@@ -973,6 +973,7 @@ if role == "教員":
     st.session_state.setdefault("week_date", date.today())
     st.session_state.setdefault("restore_notice", False)
     st.session_state.setdefault("restore_plan", None)
+    st.session_state.setdefault("draft_saved_notice", False)
 
     teacher = st.text_input("教員名", value=st.session_state.get("teacher_name", ""), key="teacher_name_input")
     if teacher:
@@ -1019,6 +1020,8 @@ if role == "教員":
     if st.session_state.get("restore_notice"):
         st.info("下書きを復元しました（勤務形態／基準学年／週／学級／表の中身を反映）。")
         st.session_state["restore_notice"] = False
+
+    st.info("🛟 作業を中断する前は、画面下の『💾 一時保存（作業中断用）』を押してください。次回、下書き一覧から復元できます。")
 
     teacher_type = st.radio(
         "勤務形態",
@@ -1381,17 +1384,17 @@ if role == "教員":
             st.dataframe(df_logs.drop(columns=["school_year"]), use_container_width=True, height=320)
 
     st.markdown("---")
-    st.subheader("📝 下書き・提出")
+    st.subheader("📝 一時保存・提出")
 
     col_a, col_b = st.columns(2)
     with col_a:
-        if st.button("💾 下書きを上書き保存（同一 教員×週×年度 は1件）", key="draft_save_btn"):
+        if st.button("💾 一時保存（作業中断用）", key="draft_save_btn"):
             if not teacher.strip():
                 st.error("教員名を入力してください（下書きの紐づけに必要です）。")
             else:
                 plan = {"timetable": timetable}
                 upsert_draft(current_school_year, teacher.strip(), base_grade, class_name, teacher_type, week_str, plan)
-                st.success("下書きを保存しました。")
+                st.success("一時保存しました。次回は下書き一覧から再開できます。")
 
     with col_b:
         if st.button("✅ この内容で管理職へ提出する", key="submit_btn"):
