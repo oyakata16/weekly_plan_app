@@ -1,9 +1,10 @@
 # weekly_plan_app.py
-# 東小松川小学校 週案管理システム 安定版 V5.2
+# 東小松川小学校 週案管理システム 安定版 V5.3
 # 機能:
 # - 週案作成（40分/45分、土曜、学校行事3/8・6/8・8/8、残り教科入力）
 # - 自動保存
 # - 前回の続きから再開
+# - 自動保存一覧から復元
 # - 下書き一覧復元
 # - 前週コピー
 # - 授業入替
@@ -14,6 +15,7 @@
 # - 管理職ダッシュボード
 # - 年間時数グラフ
 # - 印刷用表示
+# - バックアップ / 区教委提出CSV
 
 import io
 import json
@@ -105,6 +107,9 @@ PERIODS = ["1校時", "2校時", "3校時", "4校時", "5校時", "学校裁量"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
+def normalize_teacher_name(name: str) -> str:
+    return str(name or "").strip()
+
 def ensure_settings_table():
     cur.execute("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.commit()
@@ -139,6 +144,11 @@ def ensure_weekly_plans_table():
             submitted_at TEXT, approved_at TEXT, approved_by TEXT
         )
     ''')
+    for col in ["school_year", "teacher", "grade", "class", "teacher_type", "week", "plan_json", "status", "submitted_at", "approved_at", "approved_by"]:
+        try:
+            cur.execute(f"ALTER TABLE weekly_plans ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 def ensure_hours_total_table():
@@ -148,6 +158,12 @@ def ensure_hours_total_table():
             PRIMARY KEY(school_year, grade, subject)
         )
     ''')
+    for col in ["school_year", "grade", "subject", "consumed"]:
+        try:
+            ctype = "REAL" if col == "consumed" else "TEXT"
+            cur.execute(f"ALTER TABLE hours_total ADD COLUMN {col} {ctype}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 def ensure_year_init_table():
@@ -167,6 +183,11 @@ def ensure_inquiry_logs_table():
             created_at TEXT
         )
     ''')
+    for col in ["school_year", "week", "grade", "class", "teacher", "theme", "goals", "activities", "evidence", "reflection", "created_at"]:
+        try:
+            cur.execute(f"ALTER TABLE inquiry_logs ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 def ensure_autosave_table():
@@ -177,6 +198,11 @@ def ensure_autosave_table():
             teacher_type TEXT, week TEXT, plan_json TEXT, meta_json TEXT, saved_at TEXT
         )
     ''')
+    for col in ["school_year", "teacher", "grade", "class", "teacher_type", "week", "plan_json", "meta_json", "saved_at"]:
+        try:
+            cur.execute(f"ALTER TABLE auto_save_sessions ADD COLUMN {col} TEXT")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
 
 def ensure_backup_log_table():
@@ -195,6 +221,19 @@ ensure_inquiry_logs_table()
 ensure_autosave_table()
 ensure_backup_log_table()
 
+try:
+    cur.execute(
+        "UPDATE weekly_plans SET school_year=? WHERE school_year IS NULL OR school_year=''",
+        (DEFAULT_SCHOOL_YEAR,),
+    )
+    cur.execute(
+        "UPDATE hours_total SET school_year=? WHERE school_year IS NULL OR school_year=''",
+        (DEFAULT_SCHOOL_YEAR,),
+    )
+    conn.commit()
+except Exception:
+    pass
+
 STANDARD_HOURS = {
     "1年": {"国語": 306, "算数": 140, "生活": 102, "音楽": 68, "図工": 68, "体育": 102, "道徳": 34, "特活": 34, "学校行事": 0, "読書科": 70, "学校裁量（学力向上）": 35, "学校裁量（探究）": 35},
     "2年": {"国語": 280, "算数": 140, "生活": 102, "音楽": 68, "図工": 68, "体育": 102, "道徳": 35, "特活": 35, "学校行事": 0, "読書科": 70, "学校裁量（学力向上）": 35, "学校裁量（探究）": 35},
@@ -204,6 +243,7 @@ STANDARD_HOURS = {
     "6年": {"国語": 175, "社会": 105, "算数": 140, "理科": 105, "音楽": 45, "図工": 45, "家庭科": 70, "体育": 90, "道徳": 35, "特活": 35, "外国語": 70, "総合的な学習の時間": 70, "クラブ": 10, "委員会": 10, "学校行事": 0, "読書科": 70, "学校裁量（学力向上）": 35, "学校裁量（探究）": 35},
 }
 ALL_SUBJECTS = sorted({subj for g in STANDARD_HOURS.values() for subj in g.keys()})
+
 PERIOD_MINUTES = {}
 for day in DAYS:
     PERIOD_MINUTES[day] = {}
@@ -427,7 +467,9 @@ def build_hours_progress_df(school_year: str):
     out = []
     for gg in STANDARD_HOURS.keys():
         for ss in get_subjects_for_grade(gg):
-            std = float(STANDARD_HOURS[gg][ss]); used = float(consumed_map.get((gg, ss), 0.0)); remain = std - used
+            std = float(STANDARD_HOURS[gg][ss])
+            used = float(consumed_map.get((gg, ss), 0.0))
+            remain = std - used
             pct = (used / std * 100.0) if std > 0 else 0.0
             out.append({"年度": school_year, "学年": gg, "教科等": ss, "標準(45分コマ)": round(std, 2), "実施累積(45分コマ)": round(used, 2), "残り(45分コマ)": round(remain, 2), "進捗(%)": round(pct, 1)})
     return pd.DataFrame(out)
@@ -454,23 +496,40 @@ def build_optimization_suggestions(school_year: str) -> pd.DataFrame:
     for gg in STANDARD_HOURS.keys():
         elapsed = get_weeks_elapsed(school_year, gg)
         remaining_weeks = max(1, DEFAULT_WEEKS_PER_YEAR - elapsed)
-        sub = df[df["学年"] == gg].copy()
+        sub = df[df["学年"] == gg]
         for _, r in sub.iterrows():
             remain = float(r["残り(45分コマ)"])
-            rows.append({"年度": school_year, "学年": gg, "教科等": r["教科等"], "残り(45分コマ)": round(remain,2), "残り週(概算)": remaining_weeks, "今後の必要/週(45分コマ)": round(remain/remaining_weeks, 2)})
+            rows.append({"年度": school_year, "学年": gg, "教科等": r["教科等"], "残り(45分コマ)": round(remain,2), "残り週(概算)": remaining_weeks, "今後の必要/週(45分コマ)": round(remain / remaining_weeks, 2)})
     return pd.DataFrame(rows)
 
+def teacher_where_clause(column="teacher"):
+    return f"TRIM(COALESCE({column},'')) = ?"
+
 def upsert_draft(school_year: str, teacher: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
-    cur.execute("SELECT id FROM weekly_plans WHERE school_year=? AND teacher=? AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1", (school_year, teacher, week_str))
+    teacher = normalize_teacher_name(teacher)
+    cur.execute(
+        f"SELECT id FROM weekly_plans WHERE school_year=? AND {teacher_where_clause()} AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1",
+        (school_year, teacher, week_str)
+    )
     row = cur.fetchone()
     if row:
-        cur.execute("UPDATE weekly_plans SET grade=?, class=?, teacher_type=?, plan_json=?, submitted_at=DATETIME('now') WHERE id=?", (base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0]))
+        cur.execute(
+            "UPDATE weekly_plans SET teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, submitted_at=DATETIME('now') WHERE id=?",
+            (teacher, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0])
+        )
     else:
-        cur.execute("INSERT INTO weekly_plans (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, '下書き', DATETIME('now'))", (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False)))
+        cur.execute(
+            "INSERT INTO weekly_plans (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, '下書き', DATETIME('now'))",
+            (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False))
+        )
     conn.commit()
 
 def list_my_drafts(school_year: str, teacher: str):
-    cur.execute("SELECT id, week, grade, class, teacher_type, plan_json, submitted_at FROM weekly_plans WHERE school_year=? AND teacher=? AND status='下書き' ORDER BY week DESC, id DESC", (school_year, teacher))
+    teacher = normalize_teacher_name(teacher)
+    cur.execute(
+        f"SELECT id, week, grade, class, teacher_type, plan_json, submitted_at FROM weekly_plans WHERE school_year=? AND {teacher_where_clause()} AND status='下書き' ORDER BY week DESC, id DESC",
+        (school_year, teacher)
+    )
     return cur.fetchall()
 
 def load_plan_by_id(wid: int):
@@ -478,34 +537,66 @@ def load_plan_by_id(wid: int):
     return cur.fetchone()
 
 def fetch_latest_plan_before_week(school_year: str, teacher: str, week_str: str):
-    cur.execute("SELECT plan_json, week, status FROM weekly_plans WHERE school_year=? AND teacher=? AND week < ? AND status IN ('提出','承認','差戻','下書き') ORDER BY week DESC, id DESC LIMIT 1", (school_year, teacher, week_str))
+    teacher = normalize_teacher_name(teacher)
+    cur.execute(
+        f"SELECT plan_json, week, status FROM weekly_plans WHERE school_year=? AND {teacher_where_clause()} AND week < ? AND status IN ('提出','承認','差戻','下書き') ORDER BY week DESC, id DESC LIMIT 1",
+        (school_year, teacher, week_str)
+    )
     return cur.fetchone()
 
 def submit_plan_from_current(school_year: str, teacher: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
-    cur.execute("SELECT id FROM weekly_plans WHERE school_year=? AND teacher=? AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1", (school_year, teacher, week_str))
+    teacher = normalize_teacher_name(teacher)
+    cur.execute(
+        f"SELECT id FROM weekly_plans WHERE school_year=? AND {teacher_where_clause()} AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1",
+        (school_year, teacher, week_str)
+    )
     row = cur.fetchone()
     if row:
-        cur.execute("UPDATE weekly_plans SET grade=?, class=?, teacher_type=?, plan_json=?, status='提出', submitted_at=DATETIME('now') WHERE id=?", (base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0]))
+        cur.execute(
+            "UPDATE weekly_plans SET teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, status='提出', submitted_at=DATETIME('now') WHERE id=?",
+            (teacher, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0])
+        )
     else:
-        cur.execute("INSERT INTO weekly_plans (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, '提出', DATETIME('now'))", (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False)))
+        cur.execute(
+            "INSERT INTO weekly_plans (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, '提出', DATETIME('now'))",
+            (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False))
+        )
     conn.commit()
 
 def upsert_autosave(school_year: str, teacher: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
-    cur.execute("SELECT id FROM auto_save_sessions WHERE school_year=? AND teacher=? AND week=? ORDER BY id DESC LIMIT 1", (school_year, teacher, week_str))
+    teacher = normalize_teacher_name(teacher)
+    cur.execute(
+        f"SELECT id FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} AND week=? ORDER BY id DESC LIMIT 1",
+        (school_year, teacher, week_str)
+    )
     row = cur.fetchone()
     meta = {"school_year": school_year, "teacher": teacher, "grade": base_grade, "class": class_name, "teacher_type": teacher_type, "week": week_str}
     if row:
-        cur.execute("UPDATE auto_save_sessions SET grade=?, class=?, teacher_type=?, plan_json=?, meta_json=?, saved_at=DATETIME('now') WHERE id=?", (base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False), row[0]))
+        cur.execute(
+            "UPDATE auto_save_sessions SET teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, meta_json=?, saved_at=DATETIME('now') WHERE id=?",
+            (teacher, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False), row[0])
+        )
     else:
-        cur.execute("INSERT INTO auto_save_sessions (school_year, teacher, grade, class, teacher_type, week, plan_json, meta_json, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))", (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False)))
+        cur.execute(
+            "INSERT INTO auto_save_sessions (school_year, teacher, grade, class, teacher_type, week, plan_json, meta_json, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))",
+            (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False))
+        )
     conn.commit()
 
 def list_autosaves(school_year: str, teacher: str):
-    cur.execute("SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND teacher=? ORDER BY saved_at DESC, id DESC", (school_year, teacher))
+    teacher = normalize_teacher_name(teacher)
+    cur.execute(
+        f"SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} ORDER BY saved_at DESC, id DESC",
+        (school_year, teacher)
+    )
     return cur.fetchall()
 
 def fetch_latest_autosave(school_year: str, teacher: str):
-    cur.execute("SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND teacher=? ORDER BY saved_at DESC, id DESC LIMIT 1", (school_year, teacher))
+    teacher = normalize_teacher_name(teacher)
+    cur.execute(
+        f"SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} ORDER BY saved_at DESC, id DESC LIMIT 1",
+        (school_year, teacher)
+    )
     return cur.fetchone()
 
 def load_autosave_by_id(sid: int):
@@ -513,7 +604,11 @@ def load_autosave_by_id(sid: int):
     return cur.fetchone()
 
 def add_inquiry_log(school_year: str, week: str, grade: str, class_name: str, teacher: str, theme: str, goals: str, activities: str, evidence: str, reflection: str):
-    cur.execute("INSERT INTO inquiry_logs (school_year, week, grade, class, teacher, theme, goals, activities, evidence, reflection, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))", (school_year, week, grade, class_name, teacher, theme, goals, activities, evidence, reflection))
+    teacher = normalize_teacher_name(teacher)
+    cur.execute(
+        "INSERT INTO inquiry_logs (school_year, week, grade, class, teacher, theme, goals, activities, evidence, reflection, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))",
+        (school_year, week, grade, class_name, teacher, theme, goals, activities, evidence, reflection)
+    )
     conn.commit()
 
 def fetch_inquiry_logs(school_year: str, grade: str = None, class_name: str = None, teacher: str = None):
@@ -524,7 +619,7 @@ def fetch_inquiry_logs(school_year: str, grade: str = None, class_name: str = No
     if class_name and class_name.strip():
         q += " AND class=?"; args.append(class_name.strip())
     if teacher and teacher.strip():
-        q += " AND teacher=?"; args.append(teacher.strip())
+        q += " AND TRIM(COALESCE(teacher,''))=?"; args.append(normalize_teacher_name(teacher))
     q += " ORDER BY created_at DESC, id DESC"
     cur.execute(q, tuple(args))
     return cur.fetchall()
@@ -619,13 +714,14 @@ if role == "教員":
     st.session_state.setdefault("restore_plan", None)
 
     teacher = st.text_input("教員名", value=st.session_state.get("teacher_name", ""), key="teacher_name_input")
-    if teacher:
+    if teacher is not None:
         st.session_state["teacher_name"] = teacher
 
     st.markdown("---")
     st.subheader("🗂 下書き一覧（復元）")
-    if teacher.strip():
-        drafts = list_my_drafts(current_school_year, teacher.strip())
+    teacher_key = normalize_teacher_name(teacher)
+    if teacher_key:
+        drafts = list_my_drafts(current_school_year, teacher_key)
         if drafts:
             options, id_map = [], {}
             for (wid, w, g, c, ttype, _pj, subat) in drafts:
@@ -658,8 +754,10 @@ if role == "教員":
 
     st.markdown("---")
     st.subheader("🛟 前回の続きから再開 / 自動保存")
-    if teacher.strip():
-        latest_auto = fetch_latest_autosave(current_school_year, teacher.strip())
+    if teacher_key:
+        latest_auto = fetch_latest_autosave(current_school_year, teacher_key)
+        autosaves = list_autosaves(current_school_year, teacher_key)
+
         col_as1, col_as2 = st.columns([2, 3])
         with col_as1:
             if st.button("⏯ 前回の続きから再開する", key="resume_latest_btn"):
@@ -687,7 +785,8 @@ if role == "教員":
                 st.caption(f"最新の自動保存: {latest_auto[5]} / 週: {latest_auto[1]} / {latest_auto[2]} {latest_auto[3] or ''}")
             else:
                 st.caption("自動保存データはまだありません。")
-        autosaves = list_autosaves(current_school_year, teacher.strip())
+            st.caption(f"自動保存件数: {len(autosaves)} 件")
+
         if autosaves:
             options, id_map = [], {}
             for sid, w, g, c, ttype, saved_at, _plan_json, _meta_json in autosaves:
@@ -751,10 +850,10 @@ if role == "教員":
     st.markdown("---")
     st.subheader("⭐ 前週コピー")
     if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
-        if not teacher.strip():
+        if not teacher_key:
             st.error("教員名を入力してください。")
         else:
-            row = fetch_latest_plan_before_week(current_school_year, teacher.strip(), week_str)
+            row = fetch_latest_plan_before_week(current_school_year, teacher_key, week_str)
             if not row:
                 st.warning("前週データが見つかりませんでした。")
             else:
@@ -829,6 +928,7 @@ if role == "教員":
                     old_event_content = (old_event.get("content") or "").strip()
                     old_main_subject = (old_main.get("subject") or "（空欄）").strip()
                     old_main_content = (old_main.get("content") or "").strip()
+
                     if teacher_type.startswith("専科"):
                         if class_candidates:
                             opts = ["（未選択）"] + class_candidates
@@ -839,6 +939,7 @@ if role == "教員":
                             klass = old_class
                     else:
                         klass = class_name
+
                     event_opts = [x[0] for x in EVENT_FRACTIONS]
                     st.markdown('<div class="tt-section tt-event">🟨 学校行事（配分）</div>', unsafe_allow_html=True)
                     event_label = st.selectbox("学校行事（配分）", event_opts, index=event_opts.index(event_label_default) if event_label_default in event_opts else 0, key=f"{day}_{period}_eventfrac", label_visibility="collapsed")
@@ -846,10 +947,12 @@ if role == "教員":
                     event_frac = fraction_label_to_value(event_label)
                     event_minutes = minutes * event_frac
                     remain_minutes = minutes - event_minutes
+
                     event_content = ""
                     if event_frac > 0:
                         st.markdown('<div class="tt-section tt-event">🟨 学校行事（内容）</div>', unsafe_allow_html=True)
                         event_content = st.text_area("学校行事 内容", value=old_event_content, key=f"{day}_{period}_eventcont", height=45, label_visibility="collapsed")
+
                     main_subject = "（空欄）"
                     main_content = ""
                     if remain_minutes > 0:
@@ -857,18 +960,24 @@ if role == "教員":
                         st.markdown(f'<div class="tt-mini">残り：{int(round(remain_minutes))}分</div>', unsafe_allow_html=True)
                         main_subject = st.selectbox("残り枠の教科等", subject_options, index=subject_options.index(old_main_subject) if old_main_subject in subject_options else 0, key=f"{day}_{period}_mainsubj", label_visibility="collapsed")
                         main_content = st.text_area("残り枠の内容", value=old_main_content, key=f"{day}_{period}_maincont", height=55, label_visibility="collapsed")
+
                     timetable[day][period] = {"class": klass, "event": {"fraction": event_frac, "content": event_content}, "main": {"subject": main_subject, "content": main_content}}
                     st.markdown("</div>", unsafe_allow_html=True)
 
-    if teacher.strip():
+    if teacher_key:
         try:
-            upsert_autosave(current_school_year, teacher.strip(), base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
-            cur.execute("SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND teacher=? AND week=? ORDER BY id DESC LIMIT 1", (current_school_year, teacher.strip(), week_str))
+            upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
+            cur.execute(
+                f"SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} AND week=? ORDER BY id DESC LIMIT 1",
+                (current_school_year, teacher_key, week_str)
+            )
             row = cur.fetchone()
             if row:
                 st.caption(f"自動保存済み: {row[0]}")
         except Exception as e:
             st.warning(f"自動保存で問題が発生しました: {e}")
+
+    st.session_state["restore_plan"] = {"timetable": timetable}
 
     week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
     subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
@@ -901,14 +1010,14 @@ if role == "教員":
             cell = (timetable or {}).get(day, {}).get(period, {}) or {}
             segs = cell_to_segments(cell, mins)
             if not segs:
-                slot_rows.append({"年度": current_school_year, "教員": teacher, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(mins)), "学級": cell.get("class", ""), "教科等": "", "内容": ""})
+                slot_rows.append({"年度": current_school_year, "教員": teacher_key, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(mins)), "学級": cell.get("class", ""), "教科等": "", "内容": ""})
             else:
                 for seg in segs:
-                    slot_rows.append({"年度": current_school_year, "教員": teacher, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(seg.get("minutes", 0))), "学級": seg.get("class", ""), "教科等": seg.get("subject", ""), "内容": seg.get("content", "")})
+                    slot_rows.append({"年度": current_school_year, "教員": teacher_key, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(seg.get("minutes", 0))), "学級": seg.get("class", ""), "教科等": seg.get("subject", ""), "内容": seg.get("content", "")})
     df_my = pd.DataFrame(slot_rows)
     my_csv = df_my.to_csv(index=False).encode("utf-8-sig")
     today_str = date.today().strftime("%Y%m%d")
-    my_name = f"{teacher or 'teacher'}_{base_grade}_{week_str}_{today_str}_my_weekly_plan.csv".replace("/", "_")
+    my_name = f"{teacher_key or 'teacher'}_{base_grade}_{week_str}_{today_str}_my_weekly_plan.csv".replace("/", "_")
     st.download_button("⬇️ この週案をCSVで保存", my_csv, my_name, "text/csv")
 
     st.markdown("---")
@@ -920,16 +1029,16 @@ if role == "教員":
         evidence = st.text_area("証拠（成果物 / 写真 / 発表 / ルーブリック等）", value="", height=80, key="inq_evidence")
         reflection = st.text_area("振り返り（児童 / 教師）", value="", height=100, key="inq_reflection")
         if st.button("保存する", key="inq_save_btn"):
-            if not teacher.strip():
+            if not teacher_key:
                 st.error("教員名を入力してください。")
             else:
-                add_inquiry_log(current_school_year, week_str, base_grade, class_name, teacher.strip(), theme, goals, activities, evidence, reflection)
+                add_inquiry_log(current_school_year, week_str, base_grade, class_name, teacher_key, theme, goals, activities, evidence, reflection)
                 st.success("探究ログを保存しました。")
 
     with st.expander("📚 自分 / 学年の探究ログを確認", expanded=False):
         gsel = st.selectbox("学年", ["すべて"] + list(STANDARD_HOURS.keys()), index=0, key="inq_grade_filter")
         csel = st.text_input("学級（空欄で全学級）", value="", key="inq_class_filter")
-        tsel = st.text_input("教員（空欄で全教員）", value=teacher.strip(), key="inq_teacher_filter")
+        tsel = st.text_input("教員（空欄で全教員）", value=teacher_key, key="inq_teacher_filter")
         logs = fetch_inquiry_logs(current_school_year, grade=gsel, class_name=csel, teacher=tsel)
         if not logs:
             st.info("探究ログはまだありません。")
@@ -942,16 +1051,16 @@ if role == "教員":
     col_a, col_b = st.columns(2)
     with col_a:
         if st.button("💾 一時保存（作業中断用）", key="draft_save_btn"):
-            if not teacher.strip():
+            if not teacher_key:
                 st.error("教員名を入力してください。")
             else:
                 plan = {"timetable": timetable}
-                upsert_draft(current_school_year, teacher.strip(), base_grade, class_name, teacher_type, week_str, plan)
-                upsert_autosave(current_school_year, teacher.strip(), base_grade, class_name, teacher_type, week_str, plan)
+                upsert_draft(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
+                upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
                 st.success("一時保存しました。下書き一覧 / 自動保存一覧から再開できます。")
     with col_b:
         if st.button("✅ この内容で管理職へ提出する", key="submit_btn"):
-            if not teacher.strip():
+            if not teacher_key:
                 st.error("教員名を入力してください。")
             else:
                 errors = validate_timetable_for_submit(timetable)
@@ -960,7 +1069,7 @@ if role == "教員":
                     for e in errors:
                         st.write(f"- {e}")
                 else:
-                    submit_plan_from_current(current_school_year, teacher.strip(), base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
+                    submit_plan_from_current(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
                     st.success("週案を提出しました。管理職の承認をお待ちください。")
 
     st.markdown("---")
@@ -970,7 +1079,7 @@ if role == "教員":
         if df_print.empty:
             st.info("有効なコマがありません。")
         else:
-            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher}／{week_str} の週案（印刷用）**")
+            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_key}／{week_str} の週案（印刷用）**")
             st.dataframe(df_print, use_container_width=True, height=520)
             st.info("ブラウザの印刷機能（Ctrl+P）から PDF 保存・印刷を行ってください。")
 
