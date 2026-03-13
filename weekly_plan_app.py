@@ -1019,14 +1019,34 @@ if role == "教員":
 
     st.subheader("⭐ 週案自動生成（提案）")
     st.caption("※外部AIは使いません。年間時数の残り状況から、空欄コマに教科を提案して埋めます（既存入力は保持）。")
-    if st.button("🤖 空欄コマに教科を提案して自動入力", key="auto_fill_btn"):
-        restore_plan = st.session_state.get("restore_plan") or {}
-        tt = normalize_timetable(restore_plan.get("timetable", {}))
-        tt = auto_fill_timetable_proposal(current_school_year, teacher_type, base_grade, class_name, class_candidates, tt)
-        st.session_state["restore_plan"] = {"timetable": tt}
-        apply_timetable_to_widget_state(tt, teacher_type, class_name)
-        st.success("提案を反映しました（空欄のみ）。")
-        st.rerun()
+if st.button("🤖 空欄コマに教科を提案して自動入力", key="auto_fill_btn"):
+
+    restore_plan = st.session_state.get("restore_plan") or {}
+
+    tt = normalize_timetable(restore_plan.get("timetable", {}))
+
+    tt = auto_fill_timetable_proposal(
+        current_school_year,
+        teacher_type,
+        base_grade,
+        class_name,
+        class_candidates,
+        tt
+    )
+
+    # ① restore_plan更新
+    st.session_state["restore_plan"] = {"timetable": tt}
+
+    # ② widgetへ反映（ここが今回の追加）
+    apply_timetable_to_widget_state(
+        tt,
+        teacher_type,
+        class_name
+    )
+
+    st.success("空欄コマへ教科提案を反映しました。")
+
+    st.rerun()
 
     timetable = normalize_timetable((st.session_state.get("restore_plan") or {}).get("timetable", {}))
 
