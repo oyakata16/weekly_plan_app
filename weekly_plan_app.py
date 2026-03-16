@@ -1,9 +1,16 @@
 # weekly_plan_app.py
-# 東小松川小学校 週案管理システム 安定版 V5.4 修正版
-# 修正点:
-# - 時間割表が確実に表示されるよう、教員画面内のインデント崩れを修正
-# - 「週案自動生成（提案）」ボタン処理と、時間割表描画処理を分離
-# - ボタン押下時のみ自動生成し、通常時は必ず時間割表を表示
+# 東小松川小学校 週案管理システム 安定版 V5.6
+# 主な改善:
+# - 時間割表の初回表示を安定化
+# - restore_plan の初期化・同期を整理
+# - 自動生成/復元/前週コピー後の表反映を安定化
+# - 承認済み→差戻→再承認 による時数二重加算事故を抑止
+# - 管理職の承認/差戻は「提出」状態のみ実行可能に制限
+# - 専科の複数学級入力を使いやすく改善
+#   * 学級一覧の整形（全角カンマ・読点対応、重複除去、自然順ソート）
+#   * 学級クイック追加ボタン
+#   * 自動生成時の学級割当を安定化
+#   * 専科入力補助表示を追加
 
 import io
 import json
@@ -324,11 +331,52 @@ def empty_cell() -> dict:
     }
 
 
-def normalize_timetable(tt):
+def build_empty_timetable() -> dict:
     out = {}
+    for day in DAYS:
+        out[day] = {}
+        for period in PERIODS:
+            out[day][period] = empty_cell()
+    return out
+
+
+def class_sort_key(class_name: str):
+    s = str(class_name or "").strip()
+    m = re.match(r"^\s*(\d+)\s*[-－ー]\s*(\d+)\s*$", s)
+    if m:
+        return (0, int(m.group(1)), int(m.group(2)), s)
+    m2 = re.match(r"^\s*(\d+)\D*$", s)
+    if m2:
+        return (1, int(m2.group(1)), 0, s)
+    return (9, 999, 999, s)
+
+
+def sort_class_list(classes: list) -> list:
+    return sorted([str(c).strip() for c in classes if str(c).strip()], key=class_sort_key)
+
+
+def normalize_class_list(classes_input: str) -> list:
+    text = str(classes_input or "")
+    text = text.replace("，", ",").replace("、", ",").replace(" ", "")
+    raw = [c.strip() for c in text.split(",") if c.strip()]
+    seen = set()
+    out = []
+    for c in raw:
+        if c not in seen:
+            seen.add(c)
+            out.append(c)
+    return sort_class_list(out)
+
+
+def add_class_to_input(existing: str, new_class: str) -> str:
+    merged = normalize_class_list(",".join([str(existing or ""), str(new_class or "")]))
+    return ",".join(merged)
+
+
+def normalize_timetable(tt):
+    out = build_empty_timetable()
     src = tt if isinstance(tt, dict) else {}
     for day in DAYS:
-        out.setdefault(day, {})
         day_src = src.get(day, {}) if isinstance(src.get(day, {}), dict) else {}
         for period in PERIODS:
             cell = day_src.get(period)
@@ -351,6 +399,15 @@ def normalize_timetable(tt):
                 },
             }
     return out
+
+
+def ensure_restore_plan():
+    rp = st.session_state.get("restore_plan")
+    if not isinstance(rp, dict):
+        st.session_state["restore_plan"] = {"timetable": build_empty_timetable()}
+        return
+    tt = rp.get("timetable", {})
+    st.session_state["restore_plan"] = {"timetable": normalize_timetable(tt)}
 
 
 def apply_timetable_to_widget_state(timetable: dict, teacher_type: str, class_name: str):
@@ -747,29 +804,48 @@ def auto_fill_timetable_proposal(school_year: str, teacher_type: str, base_grade
     seq = suggest_subject_sequence_for_grade(school_year, base_grade)
     if not seq:
         return tt
-    idx = 0
+
+    class_candidates = sort_class_list(class_candidates)
+    subj_idx = 0
+    class_idx = 0
+
     for period in PERIODS:
         for day in DAYS:
             mins = PERIOD_MINUTES.get(day, {}).get(period, 0)
             if mins <= 0:
                 continue
+
             cell = tt[day][period]
             main = cell.get("main") or {}
             if (main.get("subject") or "").strip() not in ("", "（空欄）"):
                 continue
+
             frac = max(0.0, min(1.0, float((cell.get("event") or {}).get("fraction", 0.0) or 0.0)))
             remain = mins - mins * frac
             if remain <= 0:
                 continue
-            subj = seq[idx % len(seq)]
-            idx += 1
+
+            subj = seq[subj_idx % len(seq)]
+            subj_idx += 1
+
             klass = class_name or ""
-            if teacher_type.startswith("専科") and class_candidates:
-                klass = class_candidates[idx % len(class_candidates)]
+            if teacher_type.startswith("専科"):
+                if class_candidates:
+                    klass = class_candidates[class_idx % len(class_candidates)]
+                    class_idx += 1
+                else:
+                    klass = ""
+
             tt[day][period] = {
                 "class": klass,
-                "event": {"fraction": frac, "content": ((cell.get("event") or {}).get("content") or "")},
-                "main": {"subject": subj, "content": "（提案）単元名／ねらい／評価観点を入力"}
+                "event": {
+                    "fraction": frac,
+                    "content": ((cell.get("event") or {}).get("content") or "")
+                },
+                "main": {
+                    "subject": subj,
+                    "content": "（提案）単元名／ねらい／評価観点を入力"
+                }
             }
     return tt
 
@@ -812,7 +888,7 @@ if role == "教員":
     st.session_state.setdefault("class_name", "")
     st.session_state.setdefault("week_date", date.today())
     st.session_state.setdefault("restore_notice", False)
-    st.session_state.setdefault("restore_plan", {"timetable": normalize_timetable({})})
+    ensure_restore_plan()
 
     teacher = st.text_input("教員名", value=st.session_state.get("teacher_name", ""), key="teacher_name_input")
     if teacher is not None:
@@ -839,6 +915,7 @@ if role == "教員":
                         plan = json.loads(_pj) if _pj else {}
                     except Exception:
                         plan = {}
+
                     restored_tt = normalize_timetable(plan.get("timetable", {}))
                     restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
                     restored_class = _c or ""
@@ -853,7 +930,6 @@ if role == "教員":
                         pass
 
                     apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
-
                     st.session_state["restore_notice"] = True
                     st.success("下書きを復元しました。")
                     st.rerun()
@@ -892,7 +968,6 @@ if role == "教員":
                         pass
 
                     apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
-
                     st.session_state["restore_notice"] = True
                     st.success("前回の自動保存から再開しました。")
                     st.rerun()
@@ -935,7 +1010,6 @@ if role == "教員":
                         pass
 
                     apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
-
                     st.session_state["restore_notice"] = True
                     st.success("自動保存データを復元しました。")
                     st.rerun()
@@ -983,11 +1057,52 @@ if role == "教員":
     else:
         subject_options = ["（空欄）"] + ALL_SUBJECTS
         st.caption("※ 専科は、各コマで学級・教科を自由に選択できます。")
-        st.info("この週に指導する学級をカンマ区切りで入力してください。（例：3-1,3-2,4-1）")
-        classes_input = st.text_input("指導学級一覧", value=class_name, key="classes_input")
-        class_candidates = [c.strip() for c in classes_input.split(",") if c.strip()]
+
+        st.info("この週に指導する学級を登録してください。カンマ区切り入力も、下の追加ボタンも使えます。")
+
+        if "classes_input" not in st.session_state:
+            st.session_state["classes_input"] = class_name or ""
+
+        classes_input = st.text_input(
+            "指導学級一覧（例：3-1,3-2,4-1）",
+            value=st.session_state.get("classes_input", class_name or ""),
+            key="classes_input"
+        )
+
+        st.markdown("##### クイック追加")
+        quick_rows = [
+            ["1-1", "1-2", "1-3", "2-1", "2-2", "2-3"],
+            ["3-1", "3-2", "3-3", "4-1", "4-2", "4-3"],
+            ["5-1", "5-2", "5-3", "6-1", "6-2", "6-3"],
+        ]
+
+        for r_idx, row_vals in enumerate(quick_rows):
+            cols = st.columns(len(row_vals))
+            for c_idx, cls in enumerate(row_vals):
+                with cols[c_idx]:
+                    if st.button(cls, key=f"quick_add_class_{r_idx}_{c_idx}"):
+                        st.session_state["classes_input"] = add_class_to_input(
+                            st.session_state.get("classes_input", ""),
+                            cls
+                        )
+                        st.rerun()
+
+        col_cls1, col_cls2 = st.columns([1, 1])
+        with col_cls1:
+            if st.button("🧹 学級一覧を整形", key="normalize_classes_btn"):
+                st.session_state["classes_input"] = ",".join(
+                    normalize_class_list(st.session_state.get("classes_input", ""))
+                )
+                st.rerun()
+        with col_cls2:
+            if st.button("🗑 学級一覧をクリア", key="clear_classes_btn"):
+                st.session_state["classes_input"] = ""
+                st.rerun()
+
+        class_candidates = normalize_class_list(st.session_state.get("classes_input", ""))
+
         if class_candidates:
-            st.caption("この週に指導する学級：" + "、".join(class_candidates))
+            st.success("この週に指導する学級：" + "、".join(class_candidates))
         else:
             st.caption("※ 学級が未入力の場合、学級欄は空欄のままとなります。")
 
@@ -1018,7 +1133,7 @@ if role == "教員":
     st.caption("※外部AIは使いません。年間時数の残り状況から、空欄コマに教科を提案して埋めます（既存入力は保持）。")
 
     if st.button("🤖 空欄コマに教科を提案して自動入力", key="auto_fill_btn"):
-        restore_plan = st.session_state.get("restore_plan") or {"timetable": normalize_timetable({})}
+        restore_plan = st.session_state.get("restore_plan") or {"timetable": build_empty_timetable()}
         tt = normalize_timetable(restore_plan.get("timetable", {}))
 
         tt = auto_fill_timetable_proposal(
@@ -1036,7 +1151,8 @@ if role == "教員":
         st.success("空欄コマへ教科提案を反映しました。")
         st.rerun()
 
-    timetable = normalize_timetable((st.session_state.get("restore_plan") or {"timetable": normalize_timetable({})}).get("timetable", {}))
+    ensure_restore_plan()
+    timetable = normalize_timetable((st.session_state.get("restore_plan") or {"timetable": build_empty_timetable()}).get("timetable", {}))
 
     st.markdown("---")
     st.subheader("⭐ 授業入替")
@@ -1054,6 +1170,15 @@ if role == "教員":
             apply_timetable_to_widget_state(timetable, teacher_type, class_name)
             st.success("入替しました。")
             st.rerun()
+
+    if teacher_type.startswith("専科"):
+        st.markdown("---")
+        st.subheader("🎯 専科入力の補助")
+        if class_candidates:
+            st.caption("登録済み学級（この順で選択・提案されます）")
+            st.write(" / ".join(class_candidates))
+        else:
+            st.caption("まだ指導学級が登録されていません。")
 
     st.markdown("---")
     st.markdown("#### 一週間の時間割を入力してください（表形式）")
@@ -1192,13 +1317,11 @@ if role == "教員":
 
                     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 画面入力内容を常に restore_plan に反映
-    st.session_state["restore_plan"] = {"timetable": timetable}
+    st.session_state["restore_plan"] = {"timetable": normalize_timetable(timetable)}
 
     if teacher_key:
         try:
             upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
-            st.session_state["restore_plan"] = {"timetable": timetable}
             cur.execute(
                 f"SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} AND week=? ORDER BY id DESC LIMIT 1",
                 (current_school_year, teacher_key, week_str)
@@ -1296,7 +1419,7 @@ if role == "教員":
                 plan = {"timetable": timetable}
                 upsert_draft(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
                 upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
-                st.session_state["restore_plan"] = {"timetable": timetable}
+                st.session_state["restore_plan"] = {"timetable": normalize_timetable(timetable)}
                 st.success("一時保存しました。下書き一覧 / 自動保存一覧から再開できます。")
     with col_b:
         if st.button("✅ この内容で管理職へ提出する", key="submit_btn"):
@@ -1475,7 +1598,7 @@ if role == "管理職":
     if week_filter != "すべて":
         rows = [r for r in rows if r[6] == week_filter]
     if only_unapproved:
-        rows = [r for r in rows if r[8] not in ("承認", "下書き")]
+        rows = [r for r in rows if r[8] in ("提出", "差戻")]
 
     if not rows:
         st.info("該当する週案はありません。")
@@ -1513,25 +1636,32 @@ if role == "管理職":
             col1, col2 = st.columns(2)
             with col1:
                 if st.button(f"✅ 承認する（ID:{wid}）", key=f"approve_{wid}"):
-                    if status != "承認":
+                    if status == "提出":
                         for g in week_minutes_all:
                             for subj, mins in week_minutes_all[g].items():
                                 add_hours(view_year, g, subj, mins)
-                        cur.execute("UPDATE weekly_plans SET status='承認', approved_at=DATETIME('now'), approved_by=? WHERE id=?", ("管理職", wid))
+                        cur.execute(
+                            "UPDATE weekly_plans SET status='承認', approved_at=DATETIME('now'), approved_by=? WHERE id=?",
+                            ("管理職", wid)
+                        )
                         conn.commit()
                         st.success("承認しました。年間累積時数に反映済みです。")
                         st.rerun()
-                    else:
+                    elif status == "承認":
                         st.info("すでに承認済みです。")
+                    else:
+                        st.warning("承認できるのは『提出』状態の週案のみです。")
             with col2:
                 if st.button(f"↩ 差戻にする（ID:{wid}）", key=f"reject_{wid}"):
-                    if status != "差戻":
+                    if status == "提出":
                         cur.execute("UPDATE weekly_plans SET status='差戻' WHERE id=?", (wid,))
                         conn.commit()
                         st.warning("差戻にしました。")
                         st.rerun()
+                    elif status == "承認":
+                        st.warning("承認済み週案の差戻は無効化しています（時数整合性保護のため）。")
                     else:
-                        st.info("すでに差戻済みです。")
+                        st.info("差戻できるのは『提出』状態の週案のみです。")
 
     st.markdown("---")
     st.header(f"📊 年間累積時数の状況（{view_year}）")
