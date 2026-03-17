@@ -1,35 +1,19 @@
 # weekly_plan_app.py
-# 東小松川小学校 週案管理システム 安定版 V6
-# -----------------------------------------------
-# 機能:
-# - 週案作成（40分/45分、土曜、学校行事3/8・6/8・8/8、残り教科入力）
-# - 自動保存
-# - 前回の続きから再開
-# - 自動保存一覧から復元
-# - 下書き一覧復元
-# - 前週コピー
-# - 授業入替
-# - 時数累積（承認時）
-# - 時数不足警告
-# - 探究活動ログ
-# - 教員 / 管理職画面
-# - 管理職ダッシュボード
-# - 年間時数グラフ
-# - 印刷用表示
-# - バックアップ / 区教委提出CSV
-# -----------------------------------------------
-# V6の主修正
-# 1. 教員画面内のインデント崩れを全面修正
-# 2. 復元・前週コピー・自動生成が表へ確実反映
-# 3. widget state と restore_plan の同期を整理
-# 4. 時間割表が常に表示される構造へ修正
-# 5. 専科/担任どちらでも安全動作
-# -----------------------------------------------
+# 東小松川小学校 週案管理システム 安定版 V6.1
+# ------------------------------------------------
+# 追加:
+# - 教員 / 管理職のログイン機能
+# - 各自が ID / パスワードを自分で設定して登録
+# - 管理職登録コードによる管理職アカウント保護
+# - ログイン後に権限別画面を表示
+# - Session State と widget 初期値競合を整理
+# ------------------------------------------------
 
 import io
 import json
 import re
 import sqlite3
+import hashlib
 from datetime import date
 from typing import Optional, List
 
@@ -38,6 +22,10 @@ import streamlit as st
 
 DEFAULT_ADMIN_PASSWORD = "higakoma2025"
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
+
+DEFAULT_MANAGER_SIGNUP_CODE = "higakoma_manager_2026"
+MANAGER_SIGNUP_CODE = st.secrets.get("MANAGER_SIGNUP_CODE", DEFAULT_MANAGER_SIGNUP_CODE)
+
 DEFAULT_SCHOOL_YEAR = "令和8年度"
 DEFAULT_WEEKS_PER_YEAR = 35
 DB_PATH = "weekly_plans.db"
@@ -117,6 +105,147 @@ conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
 
+# =========================================================
+# 認証関連
+# =========================================================
+def hash_password(raw_password: str) -> str:
+    return hashlib.sha256(str(raw_password).encode("utf-8")).hexdigest()
+
+
+def ensure_users_table():
+    cur.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id TEXT PRIMARY KEY,
+            display_name TEXT,
+            password_hash TEXT,
+            role TEXT,
+            created_at TEXT
+        )
+        '''
+    )
+    conn.commit()
+
+
+def get_user(user_id: str):
+    cur.execute(
+        "SELECT user_id, display_name, password_hash, role, created_at FROM users WHERE user_id=?",
+        (str(user_id).strip(),)
+    )
+    return cur.fetchone()
+
+
+def create_user(user_id: str, display_name: str, raw_password: str, role: str):
+    user_id = str(user_id).strip()
+    display_name = str(display_name).strip()
+    pw_hash = hash_password(raw_password)
+    cur.execute(
+        "INSERT INTO users (user_id, display_name, password_hash, role, created_at) VALUES (?, ?, ?, ?, DATETIME('now'))",
+        (user_id, display_name, pw_hash, role)
+    )
+    conn.commit()
+
+
+def authenticate_user(user_id: str, raw_password: str):
+    row = get_user(user_id)
+    if not row:
+        return None
+    _uid, _display_name, _pw_hash, _role, _created_at = row
+    if _pw_hash == hash_password(raw_password):
+        return {
+            "user_id": _uid,
+            "display_name": _display_name or _uid,
+            "role": _role,
+        }
+    return None
+
+
+def init_auth_session():
+    st.session_state.setdefault("logged_in", False)
+    st.session_state.setdefault("auth_user_id", "")
+    st.session_state.setdefault("auth_display_name", "")
+    st.session_state.setdefault("auth_role", "")
+
+
+def logout():
+    keys = [
+        "logged_in", "auth_user_id", "auth_display_name", "auth_role"
+    ]
+    for k in keys:
+        if k in st.session_state:
+            del st.session_state[k]
+    st.rerun()
+
+
+def render_login_screen():
+    st.title("小学校 週の指導計画（週案）管理システム")
+    st.subheader("ログイン / 新規登録")
+
+    tab_login, tab_signup = st.tabs(["ログイン", "新規登録"])
+
+    with tab_login:
+        login_user_id = st.text_input("ログインID", key="login_user_id")
+        login_pw = st.text_input("パスワード", type="password", key="login_pw")
+
+        if st.button("ログインする", key="login_submit_btn"):
+            auth = authenticate_user(login_user_id, login_pw)
+            if auth:
+                st.session_state["logged_in"] = True
+                st.session_state["auth_user_id"] = auth["user_id"]
+                st.session_state["auth_display_name"] = auth["display_name"]
+                st.session_state["auth_role"] = auth["role"]
+                st.success("ログインしました。")
+                st.rerun()
+            else:
+                st.error("ログインIDまたはパスワードが正しくありません。")
+
+    with tab_signup:
+        signup_display_name = st.text_input("氏名", key="signup_display_name")
+        signup_user_id = st.text_input("新規ログインID", key="signup_user_id")
+        signup_pw = st.text_input("新規パスワード", type="password", key="signup_pw")
+        signup_pw2 = st.text_input("新規パスワード（確認）", type="password", key="signup_pw2")
+        signup_role = st.selectbox("利用区分", ["教員", "管理職"], key="signup_role")
+        manager_code = ""
+        if signup_role == "管理職":
+            manager_code = st.text_input("管理職登録コード", type="password", key="manager_signup_code")
+
+        if st.button("新規登録する", key="signup_submit_btn"):
+            uid = str(signup_user_id).strip()
+            dname = str(signup_display_name).strip()
+            pw1 = str(signup_pw)
+            pw2 = str(signup_pw2)
+
+            if not uid:
+                st.error("ログインIDを入力してください。")
+            elif not dname:
+                st.error("氏名を入力してください。")
+            elif not pw1:
+                st.error("パスワードを入力してください。")
+            elif pw1 != pw2:
+                st.error("パスワード確認が一致しません。")
+            elif get_user(uid):
+                st.error("そのログインIDはすでに使われています。")
+            elif signup_role == "管理職" and manager_code != MANAGER_SIGNUP_CODE:
+                st.error("管理職登録コードが違います。")
+            else:
+                try:
+                    create_user(uid, dname, pw1, signup_role)
+                    st.success("新規登録が完了しました。ログインしてください。")
+                except Exception as e:
+                    st.error(f"登録に失敗しました: {e}")
+
+
+ensure_users_table()
+init_auth_session()
+
+if not st.session_state["logged_in"]:
+    render_login_screen()
+    st.stop()
+
+
+# =========================================================
+# 共通ユーティリティ
+# =========================================================
 def normalize_teacher_name(name: str) -> str:
     return str(name or "").strip()
 
@@ -345,11 +474,19 @@ def empty_cell() -> dict:
     }
 
 
-def normalize_timetable(tt):
+def build_empty_timetable():
     out = {}
+    for day in DAYS:
+        out[day] = {}
+        for period in PERIODS:
+            out[day][period] = empty_cell()
+    return out
+
+
+def normalize_timetable(tt):
+    out = build_empty_timetable()
     src = tt if isinstance(tt, dict) else {}
     for day in DAYS:
-        out.setdefault(day, {})
         day_src = src.get(day, {}) if isinstance(src.get(day, {}), dict) else {}
         for period in PERIODS:
             cell = day_src.get(period)
@@ -786,7 +923,7 @@ def auto_fill_timetable_proposal(school_year: str, teacher_type: str, base_grade
             idx += 1
             klass = class_name or ""
             if teacher_type.startswith("専科") and class_candidates:
-                klass = class_candidates[idx % len(class_candidates)]
+                klass = class_candidates[(idx - 1) % len(class_candidates)]
             tt[day][period] = {
                 "class": klass,
                 "event": {"fraction": frac, "content": ((cell.get("event") or {}).get("content") or "")},
@@ -795,32 +932,24 @@ def auto_fill_timetable_proposal(school_year: str, teacher_type: str, base_grade
     return tt
 
 
-if "manager_authenticated" not in st.session_state:
-    st.session_state["manager_authenticated"] = False
-
-
-def require_manager_login():
-    if st.session_state["manager_authenticated"]:
-        return
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🔐 管理職ログイン")
-    pw = st.sidebar.text_input("管理職用パスワード", type="password", key="admin_pw")
-    if st.sidebar.button("ログイン", key="admin_login_btn"):
-        if pw == ADMIN_PASSWORD:
-            st.session_state["manager_authenticated"] = True
-            st.sidebar.success("管理職としてログインしました。")
-        else:
-            st.sidebar.error("パスワードが違います")
-    if not st.session_state["manager_authenticated"]:
-        st.warning("管理職専用画面です。サイドバーからパスワードを入力してください。")
-        st.stop()
-
+# =========================================================
+# ログイン後共通ヘッダ
+# =========================================================
+current_school_year = get_current_school_year()
+auth_user_id = st.session_state["auth_user_id"]
+auth_display_name = st.session_state["auth_display_name"]
+role = st.session_state["auth_role"]
 
 st.title("小学校 週の指導計画（週案）管理システム（クラウド版）")
-role = st.sidebar.selectbox("利用者区分", ["教員", "管理職"], key="role_select")
-current_school_year = get_current_school_year()
+
+st.sidebar.markdown("### ログイン情報")
+st.sidebar.write(f"ID：**{auth_user_id}**")
+st.sidebar.write(f"氏名：**{auth_display_name}**")
+st.sidebar.write(f"権限：**{role}**")
 st.sidebar.markdown("---")
 st.sidebar.write(f"📅 現在の年度：**{current_school_year}**")
+if st.sidebar.button("ログアウト", key="logout_btn"):
+    logout()
 
 # ======================================================
 # 教員画面
@@ -829,143 +958,135 @@ if role == "教員":
     st.header("📘 週案の作成・提出（教員用）")
     st.caption(f"提出先年度：{current_school_year}（管理職が設定）")
 
-    st.session_state.setdefault("teacher_name", "")
     st.session_state.setdefault("teacher_type", "担任")
     st.session_state.setdefault("base_grade", "3年")
     st.session_state.setdefault("class_name", "")
     st.session_state.setdefault("week_date", date.today())
     st.session_state.setdefault("restore_notice", False)
-    st.session_state.setdefault("restore_plan", None)
+    st.session_state.setdefault("restore_plan", {"timetable": normalize_timetable({})})
 
-    teacher = st.text_input("教員名", value=st.session_state.get("teacher_name", ""), key="teacher_name_input")
-    if teacher is not None:
-        st.session_state["teacher_name"] = teacher
+    teacher_key = auth_user_id
+    teacher_display = auth_display_name
 
-    teacher_key = normalize_teacher_name(teacher)
+    st.info(f"ログイン中の利用者：{teacher_display}（ID: {teacher_key}）")
 
     st.markdown("---")
     st.subheader("🗂 下書き一覧（復元）")
-    if teacher_key:
-        drafts = list_my_drafts(current_school_year, teacher_key)
-        if drafts:
-            options, id_map = [], {}
-            for (wid, w, g, c, ttype, _pj, subat) in drafts:
-                label = f"ID:{wid} / 週:{w} / {g} {c or ''} / {ttype} / 保存:{subat}"
-                options.append(label)
-                id_map[label] = wid
-            sel = st.selectbox("自分の下書きを選択して復元", ["（選択しない）"] + options, key="draft_pick")
-            if sel != "（選択しない）" and st.button("📥 この下書きを復元する", key="draft_restore_btn"):
-                row = load_plan_by_id(id_map[sel])
-                if row:
-                    _id, _sy, _t, _g, _c, _tt, _wk, _pj, _stt = row
-                    try:
-                        plan = json.loads(_pj) if _pj else {}
-                    except Exception:
-                        plan = {}
-                    restored_tt = normalize_timetable(plan.get("timetable", {}))
-                    restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
-                    restored_class = _c or ""
+    drafts = list_my_drafts(current_school_year, teacher_key)
+    if drafts:
+        options, id_map = [], {}
+        for (wid, w, g, c, ttype, _pj, subat) in drafts:
+            label = f"ID:{wid} / 週:{w} / {g} {c or ''} / {ttype} / 保存:{subat}"
+            options.append(label)
+            id_map[label] = wid
+        sel = st.selectbox("自分の下書きを選択して復元", ["（選択しない）"] + options, key="draft_pick")
+        if sel != "（選択しない）" and st.button("📥 この下書きを復元する", key="draft_restore_btn"):
+            row = load_plan_by_id(id_map[sel])
+            if row:
+                _id, _sy, _t, _g, _c, _tt, _wk, _pj, _stt = row
+                try:
+                    plan = json.loads(_pj) if _pj else {}
+                except Exception:
+                    plan = {}
+                restored_tt = normalize_timetable(plan.get("timetable", {}))
+                restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
+                restored_class = _c or ""
 
-                    st.session_state["restore_plan"] = {"timetable": restored_tt}
-                    st.session_state["teacher_type"] = restored_teacher_type
-                    st.session_state["base_grade"] = _g if _g in STANDARD_HOURS else st.session_state["base_grade"]
-                    st.session_state["class_name"] = restored_class
-                    try:
-                        st.session_state["week_date"] = date.fromisoformat(_wk)
-                    except Exception:
-                        pass
+                st.session_state["restore_plan"] = {"timetable": restored_tt}
+                st.session_state["teacher_type"] = restored_teacher_type
+                st.session_state["base_grade"] = _g if _g in STANDARD_HOURS else st.session_state["base_grade"]
+                st.session_state["class_name"] = restored_class
+                try:
+                    st.session_state["week_date"] = date.fromisoformat(_wk)
+                except Exception:
+                    pass
 
-                    apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
+                apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
 
-                    st.session_state["restore_notice"] = True
-                    st.success("下書きを復元しました。")
-                    st.rerun()
-        else:
-            st.caption("下書きはまだありません。")
+                st.session_state["restore_notice"] = True
+                st.success("下書きを復元しました。")
+                st.rerun()
     else:
-        st.caption("※ 教員名を入力すると下書き一覧が表示されます。")
+        st.caption("下書きはまだありません。")
 
     st.markdown("---")
     st.subheader("🛟 前回の続きから再開 / 自動保存")
-    if teacher_key:
-        latest_auto = fetch_latest_autosave(current_school_year, teacher_key)
-        autosaves = list_autosaves(current_school_year, teacher_key)
+    latest_auto = fetch_latest_autosave(current_school_year, teacher_key)
+    autosaves = list_autosaves(current_school_year, teacher_key)
 
-        col_as1, col_as2 = st.columns([2, 3])
-        with col_as1:
-            if st.button("⏯ 前回の続きから再開する", key="resume_latest_btn"):
-                if latest_auto:
-                    _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = latest_auto
-                    try:
-                        plan = json.loads(_plan_json) if _plan_json else {}
-                    except Exception:
-                        plan = {}
-
-                    restored_tt = normalize_timetable(plan.get("timetable", {}))
-                    restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
-                    restored_class = _c or ""
-
-                    st.session_state["restore_plan"] = {"timetable": restored_tt}
-                    st.session_state["teacher_type"] = restored_teacher_type
-                    st.session_state["base_grade"] = _g if _g in STANDARD_HOURS else st.session_state["base_grade"]
-                    st.session_state["class_name"] = restored_class
-                    try:
-                        st.session_state["week_date"] = date.fromisoformat(_wk)
-                    except Exception:
-                        pass
-
-                    apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
-
-                    st.session_state["restore_notice"] = True
-                    st.success("前回の自動保存から再開しました。")
-                    st.rerun()
-                else:
-                    st.info("再開できる自動保存データがありません。")
-        with col_as2:
+    col_as1, col_as2 = st.columns([2, 3])
+    with col_as1:
+        if st.button("⏯ 前回の続きから再開する", key="resume_latest_btn"):
             if latest_auto:
-                st.caption(f"最新の自動保存: {latest_auto[5]} / 週: {latest_auto[1]} / {latest_auto[2]} {latest_auto[3] or ''}")
+                _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = latest_auto
+                try:
+                    plan = json.loads(_plan_json) if _plan_json else {}
+                except Exception:
+                    plan = {}
+
+                restored_tt = normalize_timetable(plan.get("timetable", {}))
+                restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
+                restored_class = _c or ""
+
+                st.session_state["restore_plan"] = {"timetable": restored_tt}
+                st.session_state["teacher_type"] = restored_teacher_type
+                st.session_state["base_grade"] = _g if _g in STANDARD_HOURS else st.session_state["base_grade"]
+                st.session_state["class_name"] = restored_class
+                try:
+                    st.session_state["week_date"] = date.fromisoformat(_wk)
+                except Exception:
+                    pass
+
+                apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
+
+                st.session_state["restore_notice"] = True
+                st.success("前回の自動保存から再開しました。")
+                st.rerun()
             else:
-                st.caption("自動保存データはまだありません。")
-            st.caption(f"自動保存件数: {len(autosaves)} 件")
-
-        if autosaves:
-            options, id_map = [], {}
-            for sid, w, g, c, ttype, saved_at, _plan_json, _meta_json in autosaves:
-                label = f"ID:{sid} / 保存:{saved_at} / 週:{w} / {g} {c or ''} / {ttype}"
-                options.append(label)
-                id_map[label] = sid
-            sel_auto = st.selectbox("自動保存データ一覧から復元", ["（選択しない）"] + options, key="autosave_pick")
-            if sel_auto != "（選択しない）" and st.button("📂 この自動保存を復元", key="autosave_restore_btn"):
-                row = load_autosave_by_id(id_map[sel_auto])
-                if row:
-                    _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = row
-                    try:
-                        plan = json.loads(_plan_json) if _plan_json else {}
-                    except Exception:
-                        plan = {}
-
-                    restored_tt = normalize_timetable(plan.get("timetable", {}))
-                    restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
-                    restored_class = _c or ""
-
-                    st.session_state["restore_plan"] = {"timetable": restored_tt}
-                    st.session_state["teacher_type"] = restored_teacher_type
-                    st.session_state["base_grade"] = _g if _g in STANDARD_HOURS else st.session_state["base_grade"]
-                    st.session_state["class_name"] = restored_class
-                    try:
-                        st.session_state["week_date"] = date.fromisoformat(_wk)
-                    except Exception:
-                        pass
-
-                    apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
-
-                    st.session_state["restore_notice"] = True
-                    st.success("自動保存データを復元しました。")
-                    st.rerun()
+                st.info("再開できる自動保存データがありません。")
+    with col_as2:
+        if latest_auto:
+            st.caption(f"最新の自動保存: {latest_auto[5]} / 週: {latest_auto[1]} / {latest_auto[2]} {latest_auto[3] or ''}")
         else:
-            st.caption("自動保存データ一覧はまだありません。")
+            st.caption("自動保存データはまだありません。")
+        st.caption(f"自動保存件数: {len(autosaves)} 件")
+
+    if autosaves:
+        options, id_map = [], {}
+        for sid, w, g, c, ttype, saved_at, _plan_json, _meta_json in autosaves:
+            label = f"ID:{sid} / 保存:{saved_at} / 週:{w} / {g} {c or ''} / {ttype}"
+            options.append(label)
+            id_map[label] = sid
+        sel_auto = st.selectbox("自動保存データ一覧から復元", ["（選択しない）"] + options, key="autosave_pick")
+        if sel_auto != "（選択しない）" and st.button("📂 この自動保存を復元", key="autosave_restore_btn"):
+            row = load_autosave_by_id(id_map[sel_auto])
+            if row:
+                _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = row
+                try:
+                    plan = json.loads(_plan_json) if _plan_json else {}
+                except Exception:
+                    plan = {}
+
+                restored_tt = normalize_timetable(plan.get("timetable", {}))
+                restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
+                restored_class = _c or ""
+
+                st.session_state["restore_plan"] = {"timetable": restored_tt}
+                st.session_state["teacher_type"] = restored_teacher_type
+                st.session_state["base_grade"] = _g if _g in STANDARD_HOURS else st.session_state["base_grade"]
+                st.session_state["class_name"] = restored_class
+                try:
+                    st.session_state["week_date"] = date.fromisoformat(_wk)
+                except Exception:
+                    pass
+
+                apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
+
+                st.session_state["restore_notice"] = True
+                st.success("自動保存データを復元しました。")
+                st.rerun()
     else:
-        st.caption("※ 教員名を入力すると、自動保存の再開機能が使えます。")
+        st.caption("自動保存データ一覧はまだありません。")
 
     if st.session_state.get("restore_notice"):
         st.info("復元しました（勤務形態／基準学年／週／学級／表の中身を反映）。")
@@ -1021,30 +1142,27 @@ if role == "教員":
     st.markdown("---")
     st.subheader("⭐ 前週コピー")
     if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
-        if not teacher_key:
-            st.error("教員名を入力してください。")
+        row = fetch_latest_plan_before_week(current_school_year, teacher_key, week_str)
+        if not row:
+            st.warning("前週データが見つかりませんでした。")
         else:
-            row = fetch_latest_plan_before_week(current_school_year, teacher_key, week_str)
-            if not row:
-                st.warning("前週データが見つかりませんでした。")
-            else:
-                plan_json, prev_week, prev_status = row
-                try:
-                    prev_plan = json.loads(plan_json) if plan_json else {}
-                except Exception:
-                    prev_plan = {}
+            plan_json, prev_week, prev_status = row
+            try:
+                prev_plan = json.loads(plan_json) if plan_json else {}
+            except Exception:
+                prev_plan = {}
 
-                restored_tt = normalize_timetable(prev_plan.get("timetable", {}))
-                st.session_state["restore_plan"] = {"timetable": restored_tt}
-                apply_timetable_to_widget_state(restored_tt, teacher_type, class_name)
+            restored_tt = normalize_timetable(prev_plan.get("timetable", {}))
+            st.session_state["restore_plan"] = {"timetable": restored_tt}
+            apply_timetable_to_widget_state(restored_tt, teacher_type, class_name)
 
-                st.success(f"前週（{prev_week}）をコピーしました。")
-                st.rerun()
+            st.success(f"前週（{prev_week}）をコピーしました。")
+            st.rerun()
 
     st.subheader("⭐ 週案自動生成（提案）")
     st.caption("※外部AIは使いません。年間時数の残り状況から、空欄コマに教科を提案して埋めます（既存入力は保持）。")
     if st.button("🤖 空欄コマに教科を提案して自動入力", key="auto_fill_btn"):
-        restore_plan = st.session_state.get("restore_plan") or {}
+        restore_plan = st.session_state.get("restore_plan") or {"timetable": normalize_timetable({})}
         tt = normalize_timetable(restore_plan.get("timetable", {}))
         tt = auto_fill_timetable_proposal(
             current_school_year,
@@ -1061,7 +1179,7 @@ if role == "教員":
         st.success("空欄コマへ教科提案を反映しました。")
         st.rerun()
 
-    timetable = normalize_timetable((st.session_state.get("restore_plan") or {}).get("timetable", {}))
+    timetable = normalize_timetable((st.session_state.get("restore_plan") or {"timetable": normalize_timetable({})}).get("timetable", {}))
 
     st.markdown("---")
     st.subheader("⭐ 授業入替")
@@ -1088,6 +1206,8 @@ if role == "教員":
     header_cols[0].markdown('<div class="tt-headcell">　</div>', unsafe_allow_html=True)
     for i, day in enumerate(DAYS, start=1):
         header_cols[i].markdown(f'<div class="tt-headcell">{day}</div>', unsafe_allow_html=True)
+
+    event_opts = [x[0] for x in EVENT_FRACTIONS]
 
     for period in PERIODS:
         if not any(PERIOD_MINUTES[day][period] > 0 for day in DAYS):
@@ -1131,18 +1251,21 @@ if role == "教員":
                     if teacher_type.startswith("専科") and f"{day}_{period}_class" not in st.session_state:
                         st.session_state[f"{day}_{period}_class"] = default_class if default_class else "（未選択）"
 
+                    if st.session_state.get(f"{day}_{period}_eventfrac", "なし") not in event_opts:
+                        st.session_state[f"{day}_{period}_eventfrac"] = "なし"
+
+                    if st.session_state.get(f"{day}_{period}_mainsubj", "（空欄）") not in subject_options:
+                        st.session_state[f"{day}_{period}_mainsubj"] = "（空欄）"
+
                     if teacher_type.startswith("専科"):
                         if class_candidates:
                             opts = ["（未選択）"] + class_candidates
-                            current_class_value = st.session_state.get(f"{day}_{period}_class", "（未選択）")
-                            if current_class_value not in opts:
-                                current_class_value = "（未選択）"
-                                st.session_state[f"{day}_{period}_class"] = current_class_value
+                            if st.session_state.get(f"{day}_{period}_class", "（未選択）") not in opts:
+                                st.session_state[f"{day}_{period}_class"] = "（未選択）"
 
                             klass_selected = st.selectbox(
                                 "学級",
                                 opts,
-                                index=opts.index(current_class_value),
                                 key=f"{day}_{period}_class",
                                 label_visibility="collapsed"
                             )
@@ -1152,17 +1275,10 @@ if role == "教員":
                     else:
                         klass = class_name
 
-                    event_opts = [x[0] for x in EVENT_FRACTIONS]
-                    current_event_label = st.session_state.get(f"{day}_{period}_eventfrac", "なし")
-                    if current_event_label not in event_opts:
-                        current_event_label = "なし"
-                        st.session_state[f"{day}_{period}_eventfrac"] = current_event_label
-
                     st.markdown('<div class="tt-section tt-event">🟨 学校行事（配分）</div>', unsafe_allow_html=True)
                     event_label = st.selectbox(
                         "学校行事（配分）",
                         event_opts,
-                        index=event_opts.index(current_event_label),
                         key=f"{day}_{period}_eventfrac",
                         label_visibility="collapsed"
                     )
@@ -1177,7 +1293,6 @@ if role == "教員":
                         st.markdown('<div class="tt-section tt-event">🟨 学校行事（内容）</div>', unsafe_allow_html=True)
                         event_content = st.text_area(
                             "学校行事 内容",
-                            value=st.session_state.get(f"{day}_{period}_eventcont", ""),
                             key=f"{day}_{period}_eventcont",
                             height=45,
                             label_visibility="collapsed"
@@ -1186,24 +1301,17 @@ if role == "教員":
                     main_subject = "（空欄）"
                     main_content = ""
                     if remain_minutes > 0:
-                        current_main_subject = st.session_state.get(f"{day}_{period}_mainsubj", "（空欄）")
-                        if current_main_subject not in subject_options:
-                            current_main_subject = "（空欄）"
-                            st.session_state[f"{day}_{period}_mainsubj"] = current_main_subject
-
                         st.markdown('<div class="tt-section tt-main">🟦 残り教科等</div>', unsafe_allow_html=True)
                         st.markdown(f'<div class="tt-mini">残り：{int(round(remain_minutes))}分</div>', unsafe_allow_html=True)
 
                         main_subject = st.selectbox(
                             "残り枠の教科等",
                             subject_options,
-                            index=subject_options.index(current_main_subject),
                             key=f"{day}_{period}_mainsubj",
                             label_visibility="collapsed"
                         )
                         main_content = st.text_area(
                             "残り枠の内容",
-                            value=st.session_state.get(f"{day}_{period}_maincont", ""),
                             key=f"{day}_{period}_maincont",
                             height=55,
                             label_visibility="collapsed"
@@ -1217,19 +1325,19 @@ if role == "教員":
 
                     st.markdown("</div>", unsafe_allow_html=True)
 
-    if teacher_key:
-        try:
-            upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
-            st.session_state["restore_plan"] = {"timetable": timetable}
-            cur.execute(
-                f"SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} AND week=? ORDER BY id DESC LIMIT 1",
-                (current_school_year, teacher_key, week_str)
-            )
-            row = cur.fetchone()
-            if row:
-                st.caption(f"自動保存済み: {row[0]}")
-        except Exception as e:
-            st.warning(f"自動保存で問題が発生しました: {e}")
+    st.session_state["restore_plan"] = {"timetable": timetable}
+
+    try:
+        upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
+        cur.execute(
+            f"SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} AND week=? ORDER BY id DESC LIMIT 1",
+            (current_school_year, teacher_key, week_str)
+        )
+        row = cur.fetchone()
+        if row:
+            st.caption(f"自動保存済み: {row[0]}")
+    except Exception as e:
+        st.warning(f"自動保存で問題が発生しました: {e}")
 
     week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
     subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
@@ -1262,14 +1370,14 @@ if role == "教員":
             cell = (timetable or {}).get(day, {}).get(period, {}) or {}
             segs = cell_to_segments(cell, mins)
             if not segs:
-                slot_rows.append({"年度": current_school_year, "教員": teacher_key, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(mins)), "学級": cell.get("class", ""), "教科等": "", "内容": ""})
+                slot_rows.append({"年度": current_school_year, "教員ID": teacher_key, "教員名": teacher_display, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(mins)), "学級": cell.get("class", ""), "教科等": "", "内容": ""})
             else:
                 for seg in segs:
-                    slot_rows.append({"年度": current_school_year, "教員": teacher_key, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(seg.get("minutes", 0))), "学級": seg.get("class", ""), "教科等": seg.get("subject", ""), "内容": seg.get("content", "")})
+                    slot_rows.append({"年度": current_school_year, "教員ID": teacher_key, "教員名": teacher_display, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(seg.get("minutes", 0))), "学級": seg.get("class", ""), "教科等": seg.get("subject", ""), "内容": seg.get("content", "")})
     df_my = pd.DataFrame(slot_rows)
     my_csv = df_my.to_csv(index=False).encode("utf-8-sig")
     today_str = date.today().strftime("%Y%m%d")
-    my_name = f"{teacher_key or 'teacher'}_{base_grade}_{week_str}_{today_str}_my_weekly_plan.csv".replace("/", "_")
+    my_name = f"{teacher_key}_{base_grade}_{week_str}_{today_str}_my_weekly_plan.csv".replace("/", "_")
     st.download_button("⬇️ この週案をCSVで保存", my_csv, my_name, "text/csv")
 
     st.markdown("---")
@@ -1281,16 +1389,13 @@ if role == "教員":
         evidence = st.text_area("証拠（成果物 / 写真 / 発表 / ルーブリック等）", value="", height=80, key="inq_evidence")
         reflection = st.text_area("振り返り（児童 / 教師）", value="", height=100, key="inq_reflection")
         if st.button("保存する", key="inq_save_btn"):
-            if not teacher_key:
-                st.error("教員名を入力してください。")
-            else:
-                add_inquiry_log(current_school_year, week_str, base_grade, class_name, teacher_key, theme, goals, activities, evidence, reflection)
-                st.success("探究ログを保存しました。")
+            add_inquiry_log(current_school_year, week_str, base_grade, class_name, teacher_key, theme, goals, activities, evidence, reflection)
+            st.success("探究ログを保存しました。")
 
     with st.expander("📚 自分 / 学年の探究ログを確認", expanded=False):
         gsel = st.selectbox("学年", ["すべて"] + list(STANDARD_HOURS.keys()), index=0, key="inq_grade_filter")
         csel = st.text_input("学級（空欄で全学級）", value="", key="inq_class_filter")
-        tsel = st.text_input("教員（空欄で全教員）", value=teacher_key, key="inq_teacher_filter")
+        tsel = st.text_input("教員ID（空欄で全教員）", value=teacher_key, key="inq_teacher_filter")
         logs = fetch_inquiry_logs(current_school_year, grade=gsel, class_name=csel, teacher=tsel)
         if not logs:
             st.info("探究ログはまだありません。")
@@ -1303,27 +1408,21 @@ if role == "教員":
     col_a, col_b = st.columns(2)
     with col_a:
         if st.button("💾 一時保存（作業中断用）", key="draft_save_btn"):
-            if not teacher_key:
-                st.error("教員名を入力してください。")
-            else:
-                plan = {"timetable": timetable}
-                upsert_draft(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
-                upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
-                st.session_state["restore_plan"] = {"timetable": timetable}
-                st.success("一時保存しました。下書き一覧 / 自動保存一覧から再開できます。")
+            plan = {"timetable": timetable}
+            upsert_draft(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
+            upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
+            st.session_state["restore_plan"] = {"timetable": timetable}
+            st.success("一時保存しました。下書き一覧 / 自動保存一覧から再開できます。")
     with col_b:
         if st.button("✅ この内容で管理職へ提出する", key="submit_btn"):
-            if not teacher_key:
-                st.error("教員名を入力してください。")
+            errors = validate_timetable_for_submit(timetable)
+            if errors:
+                st.error("入力に不備があります。下記を修正してください：")
+                for e in errors:
+                    st.write(f"- {e}")
             else:
-                errors = validate_timetable_for_submit(timetable)
-                if errors:
-                    st.error("入力に不備があります。下記を修正してください：")
-                    for e in errors:
-                        st.write(f"- {e}")
-                else:
-                    submit_plan_from_current(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
-                    st.success("週案を提出しました。管理職の承認をお待ちください。")
+                submit_plan_from_current(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
+                st.success("週案を提出しました。管理職の承認をお待ちください。")
 
     st.markdown("---")
     st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
@@ -1332,7 +1431,7 @@ if role == "教員":
         if df_print.empty:
             st.info("有効なコマがありません。")
         else:
-            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_key}／{week_str} の週案（印刷用）**")
+            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str} の週案（印刷用）**")
             st.dataframe(df_print, use_container_width=True, height=520)
             st.info("ブラウザの印刷機能（Ctrl+P）から PDF 保存・印刷を行ってください。")
 
@@ -1340,7 +1439,6 @@ if role == "教員":
 # 管理職画面
 # ======================================================
 if role == "管理職":
-    require_manager_login()
     st.header("🧭 年度の管理（管理職）")
 
     years = {get_current_school_year(), DEFAULT_SCHOOL_YEAR}
@@ -1385,7 +1483,7 @@ if role == "管理職":
     if not is_year_initialized(view_year):
         st.warning(f"{view_year} は未初期化です。年間累積の行を0で作成します。")
         if st.button(f"✅ {view_year} を初期化する（0行作成）", key="init_year_btn"):
-            init_year_hours_zero(view_year, initialized_by="管理職")
+            init_year_hours_zero(view_year, initialized_by=auth_user_id)
             st.success(f"{view_year} を初期化しました。")
             st.rerun()
     else:
@@ -1404,7 +1502,7 @@ if role == "管理職":
 
         cda1, cda2 = st.columns(2)
         with cda1:
-            st.subheader("提出状況（教員別）")
+            st.subheader("提出状況（教員ID別）")
             by_teacher = df_plans.groupby(["teacher","status"]).size().reset_index(name="count")
             pivot = by_teacher.pivot_table(index="teacher", columns="status", values="count", fill_value=0)
             st.dataframe(pivot.reset_index(), use_container_width=True, height=240)
@@ -1421,7 +1519,7 @@ if role == "管理職":
         else:
             ev_sum = df_ev.groupby(["学年"])["学校行事(45分コマ)"].sum().reset_index()
             st.dataframe(ev_sum, use_container_width=True, height=220)
-            with st.expander("明細（週×教員）", expanded=False):
+            with st.expander("明細（週×教員ID）", expanded=False):
                 st.dataframe(df_ev, use_container_width=True, height=320)
     else:
         st.info("この年度の週案がまだありません。")
@@ -1473,7 +1571,7 @@ if role == "管理職":
     with col_f2:
         grade_filter = st.selectbox("学年", ["すべて"] + grade_list, key="filter_grade")
     with col_f3:
-        teacher_filter = st.selectbox("教員", ["すべて"] + teacher_list, key="filter_teacher")
+        teacher_filter = st.selectbox("教員ID", ["すべて"] + teacher_list, key="filter_teacher")
     col_f4, col_f5 = st.columns(2)
     with col_f4:
         week_filter = st.selectbox("週", ["すべて"] + week_list, key="filter_week")
@@ -1509,7 +1607,7 @@ if role == "管理職":
         with st.expander(title):
             st.markdown(f"状態：{status_badge(status)}", unsafe_allow_html=True)
             st.write(f"- 勤務形態：{teacher_type if teacher_type else '（未記録）'}")
-            st.write(f"- 提出者：{teacher}")
+            st.write(f"- 提出者ID：{teacher}")
             st.write(f"- 基本学級：{grade} {class_name if class_name else ''}")
             st.write(f"- 提出日時：{submitted_at if submitted_at else '（記録なし）'}")
             if approved_at:
@@ -1532,7 +1630,7 @@ if role == "管理職":
                         for g in week_minutes_all:
                             for subj, mins in week_minutes_all[g].items():
                                 add_hours(view_year, g, subj, mins)
-                        cur.execute("UPDATE weekly_plans SET status='承認', approved_at=DATETIME('now'), approved_by=? WHERE id=?", ("管理職", wid))
+                        cur.execute("UPDATE weekly_plans SET status='承認', approved_at=DATETIME('now'), approved_by=? WHERE id=?", (auth_user_id, wid))
                         conn.commit()
                         st.success("承認しました。年間累積時数に反映済みです。")
                         st.rerun()
@@ -1632,7 +1730,7 @@ if role == "管理職":
             "hours_progress": df_hours.to_csv(index=False).encode("utf-8-sig")
         }
         st.session_state["backup_filename"] = filename
-        log_backup(view_year, created_by="管理職", filename=filename)
+        log_backup(view_year, created_by=auth_user_id, filename=filename)
         st.success("バックアップを作成しました。")
 
     if st.session_state["backup_excel_bytes"]:
@@ -1660,7 +1758,7 @@ if role == "管理職":
     st.header("⭐ 探究活動ログ（管理職）")
     gsel2 = st.selectbox("学年フィルタ", ["すべて"] + list(STANDARD_HOURS.keys()), index=0, key="inq_m_grade")
     csel2 = st.text_input("学級フィルタ（空欄で全学級）", value="", key="inq_m_class")
-    tsel2 = st.text_input("教員フィルタ（空欄で全教員）", value="", key="inq_m_teacher")
+    tsel2 = st.text_input("教員IDフィルタ（空欄で全教員）", value="", key="inq_m_teacher")
     logs2 = fetch_inquiry_logs(view_year, grade=gsel2, class_name=csel2, teacher=tsel2)
     if not logs2:
         st.info("探究ログはまだありません。")
