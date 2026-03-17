@@ -1,12 +1,12 @@
 # weekly_plan_app.py
-# 東小松川小学校 週案管理システム 安定版 V6.1
+# 東小松川小学校 週案管理システム 安定版 V6.2
 # ------------------------------------------------
-# 追加:
-# - 教員 / 管理職のログイン機能
-# - 各自が ID / パスワードを自分で設定して登録
-# - 管理職登録コードによる管理職アカウント保護
-# - ログイン後に権限別画面を表示
-# - Session State と widget 初期値競合を整理
+# 本格版:
+# - 教員 / 管理職のID・パスワードログイン
+# - 各自で新規登録
+# - 管理職は登録コードが必要
+# - 週案作成 / 下書き / 自動保存 / 提出 / 承認
+# - 年間時数集計 / バックアップ / 探究ログ
 # ------------------------------------------------
 
 import io
@@ -23,7 +23,7 @@ import streamlit as st
 DEFAULT_ADMIN_PASSWORD = "higakoma2025"
 ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
 
-DEFAULT_MANAGER_SIGNUP_CODE = "higakoma_manager_2026"
+DEFAULT_MANAGER_SIGNUP_CODE = "school-admin-2026"
 MANAGER_SIGNUP_CODE = st.secrets.get("MANAGER_SIGNUP_CODE", DEFAULT_MANAGER_SIGNUP_CODE)
 
 DEFAULT_SCHOOL_YEAR = "令和8年度"
@@ -106,7 +106,7 @@ cur = conn.cursor()
 
 
 # =========================================================
-# 認証関連
+# 認証
 # =========================================================
 def hash_password(raw_password: str) -> str:
     return hashlib.sha256(str(raw_password).encode("utf-8")).hexdigest()
@@ -136,12 +136,9 @@ def get_user(user_id: str):
 
 
 def create_user(user_id: str, display_name: str, raw_password: str, role: str):
-    user_id = str(user_id).strip()
-    display_name = str(display_name).strip()
-    pw_hash = hash_password(raw_password)
     cur.execute(
         "INSERT INTO users (user_id, display_name, password_hash, role, created_at) VALUES (?, ?, ?, ?, DATETIME('now'))",
-        (user_id, display_name, pw_hash, role)
+        (str(user_id).strip(), str(display_name).strip(), hash_password(raw_password), str(role).strip())
     )
     conn.commit()
 
@@ -168,10 +165,7 @@ def init_auth_session():
 
 
 def logout():
-    keys = [
-        "logged_in", "auth_user_id", "auth_display_name", "auth_role"
-    ]
-    for k in keys:
+    for k in ["logged_in", "auth_user_id", "auth_display_name", "auth_role"]:
         if k in st.session_state:
             del st.session_state[k]
     st.rerun()
@@ -244,7 +238,7 @@ if not st.session_state["logged_in"]:
 
 
 # =========================================================
-# 共通ユーティリティ
+# DB・共通設定
 # =========================================================
 def normalize_teacher_name(name: str) -> str:
     return str(name or "").strip()
@@ -408,6 +402,9 @@ for day in DAYS:
 EVENT_FRACTIONS = [("なし", 0.0), ("3/8", 3.0 / 8.0), ("6/8", 6.0 / 8.0), ("8/8（＝1）", 1.0)]
 
 
+# =========================================================
+# 共通処理
+# =========================================================
 def get_subjects_for_grade(grade: str) -> List[str]:
     return list(STANDARD_HOURS[grade].keys())
 
@@ -519,9 +516,7 @@ def apply_timetable_to_widget_state(timetable: dict, teacher_type: str, class_na
             event = cell.get("event") or {}
             main = cell.get("main") or {}
 
-            st.session_state[f"{day}_{period}_eventfrac"] = fraction_value_to_label(
-                float(event.get("fraction", 0.0) or 0.0)
-            )
+            st.session_state[f"{day}_{period}_eventfrac"] = fraction_value_to_label(float(event.get("fraction", 0.0) or 0.0))
             st.session_state[f"{day}_{period}_eventcont"] = event.get("content", "") or ""
             st.session_state[f"{day}_{period}_mainsubj"] = main.get("subject", "（空欄）") or "（空欄）"
             st.session_state[f"{day}_{period}_maincont"] = main.get("content", "") or ""
@@ -656,10 +651,7 @@ def validate_timetable_for_submit(tt: dict):
 
 def swap_cells_in_timetable(tt: dict, day_a: str, period_a: str, day_b: str, period_b: str):
     tt = normalize_timetable(tt)
-    cell_a = tt[day_a][period_a]
-    cell_b = tt[day_b][period_b]
-    tt[day_a][period_a] = cell_b
-    tt[day_b][period_b] = cell_a
+    tt[day_a][period_a], tt[day_b][period_b] = tt[day_b][period_b], tt[day_a][period_a]
     return tt
 
 
@@ -933,7 +925,7 @@ def auto_fill_timetable_proposal(school_year: str, teacher_type: str, base_grade
 
 
 # =========================================================
-# ログイン後共通ヘッダ
+# ログイン後共通
 # =========================================================
 current_school_year = get_current_school_year()
 auth_user_id = st.session_state["auth_user_id"]
@@ -950,6 +942,7 @@ st.sidebar.markdown("---")
 st.sidebar.write(f"📅 現在の年度：**{current_school_year}**")
 if st.sidebar.button("ログアウト", key="logout_btn"):
     logout()
+
 
 # ======================================================
 # 教員画面
@@ -1002,7 +995,6 @@ if role == "教員":
                     pass
 
                 apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
-
                 st.session_state["restore_notice"] = True
                 st.success("下書きを復元しました。")
                 st.rerun()
@@ -1038,7 +1030,6 @@ if role == "教員":
                     pass
 
                 apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
-
                 st.session_state["restore_notice"] = True
                 st.success("前回の自動保存から再開しました。")
                 st.rerun()
@@ -1081,7 +1072,6 @@ if role == "教員":
                     pass
 
                 apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
-
                 st.session_state["restore_notice"] = True
                 st.success("自動保存データを復元しました。")
                 st.rerun()
@@ -1155,7 +1145,6 @@ if role == "教員":
             restored_tt = normalize_timetable(prev_plan.get("timetable", {}))
             st.session_state["restore_plan"] = {"timetable": restored_tt}
             apply_timetable_to_widget_state(restored_tt, teacher_type, class_name)
-
             st.success(f"前週（{prev_week}）をコピーしました。")
             st.rerun()
 
@@ -1175,7 +1164,6 @@ if role == "教員":
 
         st.session_state["restore_plan"] = {"timetable": tt}
         apply_timetable_to_widget_state(tt, teacher_type, class_name)
-
         st.success("空欄コマへ教科提案を反映しました。")
         st.rerun()
 
@@ -1253,7 +1241,6 @@ if role == "教員":
 
                     if st.session_state.get(f"{day}_{period}_eventfrac", "なし") not in event_opts:
                         st.session_state[f"{day}_{period}_eventfrac"] = "なし"
-
                     if st.session_state.get(f"{day}_{period}_mainsubj", "（空欄）") not in subject_options:
                         st.session_state[f"{day}_{period}_mainsubj"] = "（空欄）"
 
@@ -1434,6 +1421,7 @@ if role == "教員":
             st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str} の週案（印刷用）**")
             st.dataframe(df_print, use_container_width=True, height=520)
             st.info("ブラウザの印刷機能（Ctrl+P）から PDF 保存・印刷を行ってください。")
+
 
 # ======================================================
 # 管理職画面
