@@ -1000,6 +1000,25 @@ st.sidebar.write(f"氏名：**{auth_display_name}**")
 st.sidebar.write(f"権限：**{role}**")
 st.sidebar.markdown("---")
 st.sidebar.write(f"📅 現在の年度：**{current_school_year}**")
+
+with st.sidebar.expander("🔑 パスワード変更", expanded=False):
+    current_pw = st.text_input("現在のパスワード", type="password", key="pw_change_current")
+    new_pw1 = st.text_input("新しいパスワード", type="password", key="pw_change_new1")
+    new_pw2 = st.text_input("新しいパスワード（確認）", type="password", key="pw_change_new2")
+
+    if st.button("パスワードを変更する", key="pw_change_btn"):
+        auth = authenticate_user(auth_user_id, current_pw)
+        if not auth:
+            st.error("現在のパスワードが正しくありません。")
+        elif not new_pw1:
+            st.error("新しいパスワードを入力してください。")
+        elif new_pw1 != new_pw2:
+            st.error("新しいパスワード確認が一致しません。")
+        else:
+            update_user_password(auth_user_id, new_pw1)
+            st.success("パスワードを変更しました。")
+
+st.sidebar.markdown("---")
 if st.sidebar.button("ログアウト", key="logout_btn"):
     logout()
 
