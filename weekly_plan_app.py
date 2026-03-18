@@ -1,12 +1,11 @@
 # weekly_plan_app.py
-# 東小松川小学校 週案管理システム 安定版 V6.2
+# 東小松川小学校 週案管理システム 安定版 V6.3
 # ------------------------------------------------
-# 本格版:
-# - 教員 / 管理職のID・パスワードログイン
-# - 各自で新規登録
-# - 管理職は登録コードが必要
-# - 週案作成 / 下書き / 自動保存 / 提出 / 承認
-# - 年間時数集計 / バックアップ / 探究ログ
+# 修正:
+# - ログイン後の一時保存 / 自動保存 / 復元が再ログイン後も確実に出るよう修正
+# - weekly_plans / auto_save_sessions に user_id, teacher_name を追加
+# - 保存/復元/検索を teacher ではなく user_id 基準へ統一
+# - 旧データ互換のため不足列の自動追加と簡易移行を実施
 # ------------------------------------------------
 
 import io
@@ -278,12 +277,26 @@ def ensure_weekly_plans_table():
     cur.execute('''
         CREATE TABLE IF NOT EXISTS weekly_plans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            school_year TEXT, teacher TEXT, grade TEXT, class TEXT,
-            teacher_type TEXT, week TEXT, plan_json TEXT, status TEXT,
-            submitted_at TEXT, approved_at TEXT, approved_by TEXT
+            school_year TEXT,
+            user_id TEXT,
+            teacher_name TEXT,
+            teacher TEXT,
+            grade TEXT,
+            class TEXT,
+            teacher_type TEXT,
+            week TEXT,
+            plan_json TEXT,
+            status TEXT,
+            submitted_at TEXT,
+            approved_at TEXT,
+            approved_by TEXT
         )
     ''')
-    for col in ["school_year", "teacher", "grade", "class", "teacher_type", "week", "plan_json", "status", "submitted_at", "approved_at", "approved_by"]:
+    for col in [
+        "school_year", "user_id", "teacher_name", "teacher", "grade", "class",
+        "teacher_type", "week", "plan_json", "status", "submitted_at",
+        "approved_at", "approved_by"
+    ]:
         try:
             cur.execute(f"ALTER TABLE weekly_plans ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
@@ -320,12 +333,16 @@ def ensure_inquiry_logs_table():
     cur.execute('''
         CREATE TABLE IF NOT EXISTS inquiry_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            school_year TEXT, week TEXT, grade TEXT, class TEXT, teacher TEXT,
+            school_year TEXT, week TEXT, grade TEXT, class TEXT,
+            teacher TEXT, teacher_name TEXT,
             theme TEXT, goals TEXT, activities TEXT, evidence TEXT, reflection TEXT,
             created_at TEXT
         )
     ''')
-    for col in ["school_year", "week", "grade", "class", "teacher", "theme", "goals", "activities", "evidence", "reflection", "created_at"]:
+    for col in [
+        "school_year", "week", "grade", "class", "teacher", "teacher_name",
+        "theme", "goals", "activities", "evidence", "reflection", "created_at"
+    ]:
         try:
             cur.execute(f"ALTER TABLE inquiry_logs ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
@@ -337,11 +354,23 @@ def ensure_autosave_table():
     cur.execute('''
         CREATE TABLE IF NOT EXISTS auto_save_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            school_year TEXT, teacher TEXT, grade TEXT, class TEXT,
-            teacher_type TEXT, week TEXT, plan_json TEXT, meta_json TEXT, saved_at TEXT
+            school_year TEXT,
+            user_id TEXT,
+            teacher_name TEXT,
+            teacher TEXT,
+            grade TEXT,
+            class TEXT,
+            teacher_type TEXT,
+            week TEXT,
+            plan_json TEXT,
+            meta_json TEXT,
+            saved_at TEXT
         )
     ''')
-    for col in ["school_year", "teacher", "grade", "class", "teacher_type", "week", "plan_json", "meta_json", "saved_at"]:
+    for col in [
+        "school_year", "user_id", "teacher_name", "teacher", "grade", "class",
+        "teacher_type", "week", "plan_json", "meta_json", "saved_at"
+    ]:
         try:
             cur.execute(f"ALTER TABLE auto_save_sessions ADD COLUMN {col} TEXT")
         except sqlite3.OperationalError:
@@ -366,6 +395,7 @@ ensure_inquiry_logs_table()
 ensure_autosave_table()
 ensure_backup_log_table()
 
+# 旧データ簡易移行
 try:
     cur.execute(
         "UPDATE weekly_plans SET school_year=? WHERE school_year IS NULL OR school_year=''",
@@ -374,6 +404,18 @@ try:
     cur.execute(
         "UPDATE hours_total SET school_year=? WHERE school_year IS NULL OR school_year=''",
         (DEFAULT_SCHOOL_YEAR,),
+    )
+    cur.execute(
+        "UPDATE weekly_plans SET user_id=teacher WHERE (user_id IS NULL OR user_id='') AND teacher IS NOT NULL AND teacher<>''"
+    )
+    cur.execute(
+        "UPDATE weekly_plans SET teacher_name=teacher WHERE (teacher_name IS NULL OR teacher_name='') AND teacher IS NOT NULL AND teacher<>''"
+    )
+    cur.execute(
+        "UPDATE auto_save_sessions SET user_id=teacher WHERE (user_id IS NULL OR user_id='') AND teacher IS NOT NULL AND teacher<>''"
+    )
+    cur.execute(
+        "UPDATE auto_save_sessions SET teacher_name=teacher WHERE (teacher_name IS NULL OR teacher_name='') AND teacher IS NOT NULL AND teacher<>''"
     )
     conn.commit()
 except Exception:
@@ -729,108 +771,122 @@ def build_optimization_suggestions(school_year: str) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def teacher_where_clause(column="teacher"):
+def user_where_clause(column="user_id"):
     return f"TRIM(COALESCE({column},'')) = ?"
 
 
-def upsert_draft(school_year: str, teacher: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
-    teacher = normalize_teacher_name(teacher)
+# =========================================================
+# 週案 / 下書き / 自動保存（user_id基準）
+# =========================================================
+def upsert_draft(school_year: str, user_id: str, teacher_name: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
+    user_id = str(user_id).strip()
+    teacher_name = normalize_teacher_name(teacher_name)
     cur.execute(
-        f"SELECT id FROM weekly_plans WHERE school_year=? AND {teacher_where_clause()} AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1",
-        (school_year, teacher, week_str)
+        f"SELECT id FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1",
+        (school_year, user_id, week_str)
     )
     row = cur.fetchone()
     if row:
         cur.execute(
-            "UPDATE weekly_plans SET teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, submitted_at=DATETIME('now') WHERE id=?",
-            (teacher, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0])
+            "UPDATE weekly_plans SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, submitted_at=DATETIME('now') WHERE id=?",
+            (user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0])
         )
     else:
         cur.execute(
-            "INSERT INTO weekly_plans (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, '下書き', DATETIME('now'))",
-            (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False))
+            "INSERT INTO weekly_plans (school_year, user_id, teacher_name, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '下書き', DATETIME('now'))",
+            (school_year, user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False))
         )
     conn.commit()
 
 
-def list_my_drafts(school_year: str, teacher: str):
-    teacher = normalize_teacher_name(teacher)
+def list_my_drafts(school_year: str, user_id: str):
+    user_id = str(user_id).strip()
     cur.execute(
-        f"SELECT id, week, grade, class, teacher_type, plan_json, submitted_at FROM weekly_plans WHERE school_year=? AND {teacher_where_clause()} AND status='下書き' ORDER BY week DESC, id DESC",
-        (school_year, teacher)
+        f"SELECT id, week, grade, class, teacher_type, plan_json, submitted_at FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND status='下書き' ORDER BY week DESC, id DESC",
+        (school_year, user_id)
     )
     return cur.fetchall()
 
 
 def load_plan_by_id(wid: int):
-    cur.execute("SELECT id, school_year, teacher, grade, class, teacher_type, week, plan_json, status FROM weekly_plans WHERE id=?", (wid,))
+    cur.execute("SELECT id, school_year, user_id, teacher_name, grade, class, teacher_type, week, plan_json, status FROM weekly_plans WHERE id=?", (wid,))
     return cur.fetchone()
 
 
-def fetch_latest_plan_before_week(school_year: str, teacher: str, week_str: str):
-    teacher = normalize_teacher_name(teacher)
+def fetch_latest_plan_before_week(school_year: str, user_id: str, week_str: str):
+    user_id = str(user_id).strip()
     cur.execute(
-        f"SELECT plan_json, week, status FROM weekly_plans WHERE school_year=? AND {teacher_where_clause()} AND week < ? AND status IN ('提出','承認','差戻','下書き') ORDER BY week DESC, id DESC LIMIT 1",
-        (school_year, teacher, week_str)
+        f"SELECT plan_json, week, status FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND week < ? AND status IN ('提出','承認','差戻','下書き') ORDER BY week DESC, id DESC LIMIT 1",
+        (school_year, user_id, week_str)
     )
     return cur.fetchone()
 
 
-def submit_plan_from_current(school_year: str, teacher: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
-    teacher = normalize_teacher_name(teacher)
+def submit_plan_from_current(school_year: str, user_id: str, teacher_name: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
+    user_id = str(user_id).strip()
+    teacher_name = normalize_teacher_name(teacher_name)
     cur.execute(
-        f"SELECT id FROM weekly_plans WHERE school_year=? AND {teacher_where_clause()} AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1",
-        (school_year, teacher, week_str)
+        f"SELECT id FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1",
+        (school_year, user_id, week_str)
     )
     row = cur.fetchone()
     if row:
         cur.execute(
-            "UPDATE weekly_plans SET teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, status='提出', submitted_at=DATETIME('now') WHERE id=?",
-            (teacher, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0])
+            "UPDATE weekly_plans SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, status='提出', submitted_at=DATETIME('now') WHERE id=?",
+            (user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0])
         )
     else:
         cur.execute(
-            "INSERT INTO weekly_plans (school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, '提出', DATETIME('now'))",
-            (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False))
+            "INSERT INTO weekly_plans (school_year, user_id, teacher_name, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '提出', DATETIME('now'))",
+            (school_year, user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False))
         )
     conn.commit()
 
 
-def upsert_autosave(school_year: str, teacher: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
-    teacher = normalize_teacher_name(teacher)
+def upsert_autosave(school_year: str, user_id: str, teacher_name: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
+    user_id = str(user_id).strip()
+    teacher_name = normalize_teacher_name(teacher_name)
     cur.execute(
-        f"SELECT id FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} AND week=? ORDER BY id DESC LIMIT 1",
-        (school_year, teacher, week_str)
+        f"SELECT id FROM auto_save_sessions WHERE school_year=? AND {user_where_clause('user_id')} AND week=? ORDER BY id DESC LIMIT 1",
+        (school_year, user_id, week_str)
     )
     row = cur.fetchone()
-    meta = {"school_year": school_year, "teacher": teacher, "grade": base_grade, "class": class_name, "teacher_type": teacher_type, "week": week_str}
+    meta = {
+        "school_year": school_year,
+        "user_id": user_id,
+        "teacher_name": teacher_name,
+        "grade": base_grade,
+        "class": class_name,
+        "teacher_type": teacher_type,
+        "week": week_str
+    }
     if row:
         cur.execute(
-            "UPDATE auto_save_sessions SET teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, meta_json=?, saved_at=DATETIME('now') WHERE id=?",
-            (teacher, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False), row[0])
+            "UPDATE auto_save_sessions SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, meta_json=?, saved_at=DATETIME('now') WHERE id=?",
+            (user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False), row[0])
         )
     else:
         cur.execute(
-            "INSERT INTO auto_save_sessions (school_year, teacher, grade, class, teacher_type, week, plan_json, meta_json, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))",
-            (school_year, teacher, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False))
+            "INSERT INTO auto_save_sessions (school_year, user_id, teacher_name, teacher, grade, class, teacher_type, week, plan_json, meta_json, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))",
+            (school_year, user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False))
         )
     conn.commit()
 
 
-def list_autosaves(school_year: str, teacher: str):
-    teacher = normalize_teacher_name(teacher)
+def list_autosaves(school_year: str, user_id: str):
+    user_id = str(user_id).strip()
     cur.execute(
-        f"SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} ORDER BY saved_at DESC, id DESC",
-        (school_year, teacher)
+        f"SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND {user_where_clause('user_id')} ORDER BY saved_at DESC, id DESC",
+        (school_year, user_id)
     )
     return cur.fetchall()
 
 
-def fetch_latest_autosave(school_year: str, teacher: str):
-    teacher = normalize_teacher_name(teacher)
+def fetch_latest_autosave(school_year: str, user_id: str):
+    user_id = str(user_id).strip()
     cur.execute(
-        f"SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} ORDER BY saved_at DESC, id DESC LIMIT 1",
-        (school_year, teacher)
+        f"SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND {user_where_clause('user_id')} ORDER BY saved_at DESC, id DESC LIMIT 1",
+        (school_year, user_id)
     )
     return cur.fetchone()
 
@@ -840,17 +896,16 @@ def load_autosave_by_id(sid: int):
     return cur.fetchone()
 
 
-def add_inquiry_log(school_year: str, week: str, grade: str, class_name: str, teacher: str, theme: str, goals: str, activities: str, evidence: str, reflection: str):
-    teacher = normalize_teacher_name(teacher)
+def add_inquiry_log(school_year: str, week: str, grade: str, class_name: str, teacher: str, teacher_name: str, theme: str, goals: str, activities: str, evidence: str, reflection: str):
     cur.execute(
-        "INSERT INTO inquiry_logs (school_year, week, grade, class, teacher, theme, goals, activities, evidence, reflection, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))",
-        (school_year, week, grade, class_name, teacher, theme, goals, activities, evidence, reflection)
+        "INSERT INTO inquiry_logs (school_year, week, grade, class, teacher, teacher_name, theme, goals, activities, evidence, reflection, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))",
+        (school_year, week, grade, class_name, teacher, teacher_name, theme, goals, activities, evidence, reflection)
     )
     conn.commit()
 
 
 def fetch_inquiry_logs(school_year: str, grade: str = None, class_name: str = None, teacher: str = None):
-    q = "SELECT id, school_year, week, grade, class, teacher, theme, goals, activities, evidence, reflection, created_at FROM inquiry_logs WHERE school_year=?"
+    q = "SELECT id, school_year, week, grade, class, teacher, teacher_name, theme, goals, activities, evidence, reflection, created_at FROM inquiry_logs WHERE school_year=?"
     args = [school_year]
     if grade and grade != "すべて":
         q += " AND grade=?"
@@ -860,7 +915,7 @@ def fetch_inquiry_logs(school_year: str, grade: str = None, class_name: str = No
         args.append(class_name.strip())
     if teacher and teacher.strip():
         q += " AND TRIM(COALESCE(teacher,''))=?"
-        args.append(normalize_teacher_name(teacher))
+        args.append(str(teacher).strip())
     q += " ORDER BY created_at DESC, id DESC"
     cur.execute(q, tuple(args))
     return cur.fetchall()
@@ -868,7 +923,7 @@ def fetch_inquiry_logs(school_year: str, grade: str = None, class_name: str = No
 
 def aggregate_events_from_plans(plans_rows) -> pd.DataFrame:
     out = []
-    for (wid, sy, teacher, grade, class_name, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by) in plans_rows:
+    for (wid, sy, user_id, teacher_name, grade, class_name, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by) in plans_rows:
         try:
             plan = json.loads(plan_json) if plan_json else {}
         except Exception:
@@ -878,7 +933,12 @@ def aggregate_events_from_plans(plans_rows) -> pd.DataFrame:
         for gg, mp in week_mins.items():
             ev = float(mp.get("学校行事", 0.0))
             if ev > 0:
-                out.append({"年度": sy, "週": week, "学年": gg, "教員": teacher, "状態": status, "学校行事(分)": int(round(ev)), "学校行事(45分コマ)": round(convert_to_45(ev), 2)})
+                out.append({
+                    "年度": sy, "週": week, "学年": gg,
+                    "教員ID": user_id, "教員名": teacher_name,
+                    "状態": status, "学校行事(分)": int(round(ev)),
+                    "学校行事(45分コマ)": round(convert_to_45(ev), 2)
+                })
     return pd.DataFrame(out)
 
 
@@ -976,7 +1036,7 @@ if role == "教員":
         if sel != "（選択しない）" and st.button("📥 この下書きを復元する", key="draft_restore_btn"):
             row = load_plan_by_id(id_map[sel])
             if row:
-                _id, _sy, _t, _g, _c, _tt, _wk, _pj, _stt = row
+                _id, _sy, _uid, _tname, _g, _c, _tt, _wk, _pj, _stt = row
                 try:
                     plan = json.loads(_pj) if _pj else {}
                 except Exception:
@@ -1315,9 +1375,9 @@ if role == "教員":
     st.session_state["restore_plan"] = {"timetable": timetable}
 
     try:
-        upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
+        upsert_autosave(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
         cur.execute(
-            f"SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND {teacher_where_clause()} AND week=? ORDER BY id DESC LIMIT 1",
+            f"SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND {user_where_clause('user_id')} AND week=? ORDER BY id DESC LIMIT 1",
             (current_school_year, teacher_key, week_str)
         )
         row = cur.fetchone()
@@ -1376,7 +1436,7 @@ if role == "教員":
         evidence = st.text_area("証拠（成果物 / 写真 / 発表 / ルーブリック等）", value="", height=80, key="inq_evidence")
         reflection = st.text_area("振り返り（児童 / 教師）", value="", height=100, key="inq_reflection")
         if st.button("保存する", key="inq_save_btn"):
-            add_inquiry_log(current_school_year, week_str, base_grade, class_name, teacher_key, theme, goals, activities, evidence, reflection)
+            add_inquiry_log(current_school_year, week_str, base_grade, class_name, teacher_key, teacher_display, theme, goals, activities, evidence, reflection)
             st.success("探究ログを保存しました。")
 
     with st.expander("📚 自分 / 学年の探究ログを確認", expanded=False):
@@ -1387,7 +1447,7 @@ if role == "教員":
         if not logs:
             st.info("探究ログはまだありません。")
         else:
-            df_logs = pd.DataFrame(logs, columns=["id","school_year","week","grade","class","teacher","theme","goals","activities","evidence","reflection","created_at"])
+            df_logs = pd.DataFrame(logs, columns=["id","school_year","week","grade","class","teacher","teacher_name","theme","goals","activities","evidence","reflection","created_at"])
             st.dataframe(df_logs.drop(columns=["school_year"]), use_container_width=True, height=320)
 
     st.markdown("---")
@@ -1396,8 +1456,8 @@ if role == "教員":
     with col_a:
         if st.button("💾 一時保存（作業中断用）", key="draft_save_btn"):
             plan = {"timetable": timetable}
-            upsert_draft(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
-            upsert_autosave(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, plan)
+            upsert_draft(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, plan)
+            upsert_autosave(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, plan)
             st.session_state["restore_plan"] = {"timetable": timetable}
             st.success("一時保存しました。下書き一覧 / 自動保存一覧から再開できます。")
     with col_b:
@@ -1408,7 +1468,7 @@ if role == "教員":
                 for e in errors:
                     st.write(f"- {e}")
             else:
-                submit_plan_from_current(current_school_year, teacher_key, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
+                submit_plan_from_current(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
                 st.success("週案を提出しました。管理職の承認をお待ちください。")
 
     st.markdown("---")
@@ -1446,7 +1506,7 @@ if role == "管理職":
         pass
 
     years_list = sorted(list(years))
-    coly1, coly2, coly3 = st.columns([2,2,2])
+    coly1, coly2, coly3 = st.columns([2, 2, 2])
     with coly1:
         view_year = st.selectbox("表示する年度", years_list, index=years_list.index(get_current_school_year()) if get_current_school_year() in years_list else 0, key="view_year_select")
     with coly2:
@@ -1477,13 +1537,13 @@ if role == "管理職":
     else:
         st.info(f"✅ {view_year} は初期化済みです。")
 
-    cur.execute("SELECT id, school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by FROM weekly_plans WHERE school_year=? ORDER BY id DESC", (view_year,))
+    cur.execute("SELECT id, school_year, user_id, teacher_name, grade, class, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by FROM weekly_plans WHERE school_year=? ORDER BY id DESC", (view_year,))
     all_rows = cur.fetchall()
 
     st.markdown("---")
     st.header("⭐ ダッシュボード（管理職）")
     if all_rows:
-        df_plans = pd.DataFrame(all_rows, columns=["id","school_year","teacher","grade","class","teacher_type","week","plan_json","status","submitted_at","approved_at","approved_by"])
+        df_plans = pd.DataFrame(all_rows, columns=["id","school_year","user_id","teacher_name","grade","class","teacher_type","week","plan_json","status","submitted_at","approved_at","approved_by"])
         st.subheader("提出状況（件数）")
         counts = df_plans["status"].value_counts().to_dict()
         st.write({k: int(v) for k, v in counts.items()})
@@ -1491,8 +1551,8 @@ if role == "管理職":
         cda1, cda2 = st.columns(2)
         with cda1:
             st.subheader("提出状況（教員ID別）")
-            by_teacher = df_plans.groupby(["teacher","status"]).size().reset_index(name="count")
-            pivot = by_teacher.pivot_table(index="teacher", columns="status", values="count", fill_value=0)
+            by_teacher = df_plans.groupby(["user_id","status"]).size().reset_index(name="count")
+            pivot = by_teacher.pivot_table(index="user_id", columns="status", values="count", fill_value=0)
             st.dataframe(pivot.reset_index(), use_container_width=True, height=240)
         with cda2:
             st.subheader("提出状況（学年別）")
@@ -1507,7 +1567,7 @@ if role == "管理職":
         else:
             ev_sum = df_ev.groupby(["学年"])["学校行事(45分コマ)"].sum().reset_index()
             st.dataframe(ev_sum, use_container_width=True, height=220)
-            with st.expander("明細（週×教員ID）", expanded=False):
+            with st.expander("明細（週×教員）", expanded=False):
                 st.dataframe(df_ev, use_container_width=True, height=320)
     else:
         st.info("この年度の週案がまだありません。")
@@ -1539,7 +1599,7 @@ if role == "管理職":
     st.header("📝 提出された週案一覧（管理職用）")
     counts = {"下書き": 0, "提出": 0, "承認": 0, "差戻": 0}
     for r in all_rows:
-        stt = r[8]
+        stt = r[9]
         if stt in counts:
             counts[stt] += 1
     st.markdown("#### 状態別件数")
@@ -1548,9 +1608,9 @@ if role == "管理職":
     st.write(f"- 承認：{counts['承認']} 件")
     st.write(f"- 差戻：{counts['差戻']} 件")
 
-    grade_list = sorted({r[3] for r in all_rows if r[3]})
+    grade_list = sorted({r[4] for r in all_rows if r[4]})
     teacher_list = sorted({r[2] for r in all_rows if r[2]})
-    week_list = sorted({r[6] for r in all_rows if r[6]}, reverse=True)
+    week_list = sorted({r[7] for r in all_rows if r[7]}, reverse=True)
 
     st.markdown("#### 表示フィルタ")
     col_f1, col_f2, col_f3 = st.columns(3)
@@ -1568,34 +1628,34 @@ if role == "管理職":
 
     rows = all_rows
     if filter_status != "すべて":
-        rows = [r for r in rows if r[8] == filter_status]
+        rows = [r for r in rows if r[9] == filter_status]
     if grade_filter != "すべて":
-        rows = [r for r in rows if r[3] == grade_filter]
+        rows = [r for r in rows if r[4] == grade_filter]
     if teacher_filter != "すべて":
         rows = [r for r in rows if r[2] == teacher_filter]
     if week_filter != "すべて":
-        rows = [r for r in rows if r[6] == week_filter]
+        rows = [r for r in rows if r[7] == week_filter]
     if only_unapproved:
-        rows = [r for r in rows if r[8] not in ("承認", "下書き")]
+        rows = [r for r in rows if r[9] not in ("承認", "下書き")]
 
     if not rows:
         st.info("該当する週案はありません。")
     else:
         st.caption("※ 各行をクリックすると詳細が表示されます。")
 
-    for (wid, school_year, teacher, grade, class_name, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by) in rows:
+    for (wid, school_year, user_id, teacher_name, grade, class_name, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by) in rows:
         try:
             plan = json.loads(plan_json) if plan_json else {}
         except Exception:
             plan = {}
         timetable = normalize_timetable(plan.get("timetable", {}))
         week_minutes_all = compute_week_subject_minutes(timetable, grade)
-        title = f"ID:{wid} / {school_year} / {week} / {grade} / {class_name} / {teacher} / 状態：{status}"
+        title = f"ID:{wid} / {school_year} / {week} / {grade} / {class_name} / {teacher_name}（{user_id}） / 状態：{status}"
 
         with st.expander(title):
             st.markdown(f"状態：{status_badge(status)}", unsafe_allow_html=True)
             st.write(f"- 勤務形態：{teacher_type if teacher_type else '（未記録）'}")
-            st.write(f"- 提出者ID：{teacher}")
+            st.write(f"- 提出者：{teacher_name}（{user_id}）")
             st.write(f"- 基本学級：{grade} {class_name if class_name else ''}")
             st.write(f"- 提出日時：{submitted_at if submitted_at else '（記録なし）'}")
             if approved_at:
@@ -1657,13 +1717,13 @@ if role == "管理職":
         conn.commit()
 
     def fetch_all_weekly_plans_for_year(school_year: str):
-        cur.execute("SELECT id, school_year, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by FROM weekly_plans WHERE school_year=? ORDER BY id DESC", (school_year,))
+        cur.execute("SELECT id, school_year, user_id, teacher_name, grade, class, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by FROM weekly_plans WHERE school_year=? ORDER BY id DESC", (school_year,))
         return cur.fetchall()
 
     def flatten_plans_to_rows(plans):
         plan_rows, slot_rows = [], []
-        for (wid, sy, teacher, grade, class_name, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by) in plans:
-            plan_rows.append({"id": wid, "school_year": sy, "teacher": teacher, "grade": grade, "class": class_name, "teacher_type": teacher_type, "week": week, "status": status, "submitted_at": submitted_at, "approved_at": approved_at, "approved_by": approved_by})
+        for (wid, sy, user_id, teacher_name, grade, class_name, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by) in plans:
+            plan_rows.append({"id": wid, "school_year": sy, "user_id": user_id, "teacher_name": teacher_name, "grade": grade, "class": class_name, "teacher_type": teacher_type, "week": week, "status": status, "submitted_at": submitted_at, "approved_at": approved_at, "approved_by": approved_by})
             try:
                 plan = json.loads(plan_json) if plan_json else {}
             except Exception:
@@ -1677,10 +1737,10 @@ if role == "管理職":
                     cell = (timetable or {}).get(day, {}).get(period, {}) or {}
                     segs = cell_to_segments(cell, slot_minutes)
                     if not segs:
-                        slot_rows.append({"plan_id": wid, "school_year": sy, "week": week, "teacher": teacher, "base_grade": grade, "base_class": class_name, "teacher_type": teacher_type, "day": day, "period": period, "minutes": int(round(slot_minutes)), "class": cell.get("class", ""), "subject": "", "content": "", "status": status})
+                        slot_rows.append({"plan_id": wid, "school_year": sy, "week": week, "user_id": user_id, "teacher_name": teacher_name, "base_grade": grade, "base_class": class_name, "teacher_type": teacher_type, "day": day, "period": period, "minutes": int(round(slot_minutes)), "class": cell.get("class", ""), "subject": "", "content": "", "status": status})
                     else:
                         for seg in segs:
-                            slot_rows.append({"plan_id": wid, "school_year": sy, "week": week, "teacher": teacher, "base_grade": grade, "base_class": class_name, "teacher_type": teacher_type, "day": day, "period": period, "minutes": int(round(seg.get("minutes", 0))), "class": seg.get("class", ""), "subject": seg.get("subject", ""), "content": seg.get("content", ""), "status": status})
+                            slot_rows.append({"plan_id": wid, "school_year": sy, "week": week, "user_id": user_id, "teacher_name": teacher_name, "base_grade": grade, "base_class": class_name, "teacher_type": teacher_type, "day": day, "period": period, "minutes": int(round(seg.get("minutes", 0))), "class": seg.get("class", ""), "subject": seg.get("subject", ""), "content": seg.get("content", ""), "status": status})
         return pd.DataFrame(plan_rows), pd.DataFrame(slot_rows)
 
     def to_excel_bytes(dfs: dict):
@@ -1751,5 +1811,5 @@ if role == "管理職":
     if not logs2:
         st.info("探究ログはまだありません。")
     else:
-        df_logs2 = pd.DataFrame(logs2, columns=["id","school_year","week","grade","class","teacher","theme","goals","activities","evidence","reflection","created_at"])
+        df_logs2 = pd.DataFrame(logs2, columns=["id","school_year","week","grade","class","teacher","teacher_name","theme","goals","activities","evidence","reflection","created_at"])
         st.dataframe(df_logs2.drop(columns=["school_year"]), use_container_width=True, height=380)
