@@ -114,7 +114,6 @@ def render_login():
     st.title("週案管理システム")
     st.subheader("ログイン / 新規登録")
 
-    # DB状態表示
     user_count = count_users()
     if user_count == 0:
         st.warning("ユーザー未登録です。先に新規登録してください")
@@ -125,11 +124,11 @@ def render_login():
 
     # ログイン
     with tab1:
-        uid = st.text_input("ID")
-        pw = st.text_input("パスワード", type="password")
+        login_uid = st.text_input("ID", key="login_uid")
+        login_pw = st.text_input("パスワード", type="password", key="login_pw")
 
-        if st.button("ログイン"):
-            user = authenticate_user(uid, pw)
+        if st.button("ログイン", key="login_btn"):
+            user = authenticate_user(login_uid, login_pw)
             if user:
                 st.session_state["login_user"] = user
                 st.success("ログイン成功")
@@ -139,17 +138,23 @@ def render_login():
 
     # 新規登録
     with tab2:
-        uid = st.text_input("ID（英数字）")
-        name = st.text_input("氏名")
-        pw = st.text_input("パスワード", type="password")
-        role = st.selectbox("権限", ["教員", "管理職"])
+        signup_uid = st.text_input("ID（英数字）", key="signup_uid")
+        signup_name = st.text_input("氏名", key="signup_name")
+        signup_pw = st.text_input("パスワード", type="password", key="signup_pw")
+        signup_role = st.selectbox("権限", ["教員", "管理職"], key="signup_role")
 
-        if st.button("登録"):
-            if register_user(uid, name, pw, role):
-                st.success("登録成功")
+        if st.button("登録", key="signup_btn"):
+            if not signup_uid.strip():
+                st.error("IDを入力してください")
+            elif not signup_name.strip():
+                st.error("氏名を入力してください")
+            elif not signup_pw:
+                st.error("パスワードを入力してください")
             else:
-                st.error("登録失敗（ID重複の可能性）")
-
+                if register_user(signup_uid, signup_name, signup_pw, signup_role):
+                    st.success("登録成功")
+                else:
+                    st.error("登録失敗（ID重複の可能性）")
 # =========================
 # 未ログインなら停止
 # =========================
