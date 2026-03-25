@@ -1,7 +1,7 @@
 # weekly_plan_app.py
-# 東小松川小学校 週案管理システム V7 完全統合版
+# 東小松川小学校 週案管理システム V7.1 完全版
 # ------------------------------------------------
-# 主な機能
+# 追加・修正
 # - 教員 / 管理職のログイン
 # - 新規登録（管理職は登録コード必須）
 # - パスワード変更
@@ -12,6 +12,9 @@
 # - 探究活動ログ
 # - バックアップ / 区教委提出CSV
 # - 管理職画面では氏名優先表示
+# - DBパス固定化
+# - DuplicateElementId 対策
+# - session_state 書き換え順の整理
 # ------------------------------------------------
 
 import io
@@ -209,7 +212,13 @@ def init_auth_session():
 
 
 def logout():
-    for k in ["logged_in", "auth_user_id", "auth_display_name", "auth_role"]:
+    keys_to_clear = [
+        "logged_in", "auth_user_id", "auth_display_name", "auth_role",
+        "restore_notice", "restore_plan", "teacher_type", "base_grade",
+        "class_name", "week_date", "class_name_input", "week_date_input",
+        "classes_input"
+    ]
+    for k in keys_to_clear:
         if k in st.session_state:
             del st.session_state[k]
     st.rerun()
@@ -1065,12 +1074,16 @@ if role == "教員":
     st.caption(f"提出先年度：{current_school_year}（管理職が設定）")
     st.info(f"ログイン中の利用者：{auth_display_name}（ID: {auth_user_id}）")
 
+    # 画面用 state の初期化（ウィジェット生成前）
     st.session_state.setdefault("teacher_type", "担任")
     st.session_state.setdefault("base_grade", "3年")
     st.session_state.setdefault("class_name", "")
     st.session_state.setdefault("week_date", date.today())
     st.session_state.setdefault("restore_notice", False)
     st.session_state.setdefault("restore_plan", {"timetable": normalize_timetable({})})
+    st.session_state.setdefault("class_name_input", st.session_state.get("class_name", ""))
+    st.session_state.setdefault("week_date_input", st.session_state.get("week_date", date.today()))
+    st.session_state.setdefault("classes_input", st.session_state.get("class_name", ""))
 
     teacher_key = auth_user_id
     teacher_display = auth_display_name
@@ -1101,8 +1114,11 @@ if role == "教員":
                 st.session_state["teacher_type"] = restored_teacher_type
                 st.session_state["base_grade"] = _g if _g in STANDARD_HOURS else st.session_state["base_grade"]
                 st.session_state["class_name"] = restored_class
+                st.session_state["class_name_input"] = restored_class
                 try:
-                    st.session_state["week_date"] = date.fromisoformat(_wk)
+                    restored_date = date.fromisoformat(_wk)
+                    st.session_state["week_date"] = restored_date
+                    st.session_state["week_date_input"] = restored_date
                 except Exception:
                     pass
 
@@ -1136,8 +1152,11 @@ if role == "教員":
                 st.session_state["teacher_type"] = restored_teacher_type
                 st.session_state["base_grade"] = _g if _g in STANDARD_HOURS else st.session_state["base_grade"]
                 st.session_state["class_name"] = restored_class
+                st.session_state["class_name_input"] = restored_class
                 try:
-                    st.session_state["week_date"] = date.fromisoformat(_wk)
+                    restored_date = date.fromisoformat(_wk)
+                    st.session_state["week_date"] = restored_date
+                    st.session_state["week_date_input"] = restored_date
                 except Exception:
                     pass
 
@@ -1178,8 +1197,11 @@ if role == "教員":
                 st.session_state["teacher_type"] = restored_teacher_type
                 st.session_state["base_grade"] = _g if _g in STANDARD_HOURS else st.session_state["base_grade"]
                 st.session_state["class_name"] = restored_class
+                st.session_state["class_name_input"] = restored_class
                 try:
-                    st.session_state["week_date"] = date.fromisoformat(_wk)
+                    restored_date = date.fromisoformat(_wk)
+                    st.session_state["week_date"] = restored_date
+                    st.session_state["week_date_input"] = restored_date
                 except Exception:
                     pass
 
@@ -1194,23 +1216,33 @@ if role == "教員":
         st.info("復元しました（勤務形態／基準学年／週／学級／表の中身を反映）。")
         st.session_state["restore_notice"] = False
 
-    teacher_type = st.radio("勤務形態", ["担任", "専科（音楽・家庭科など）"], index=0 if st.session_state["teacher_type"] == "担任" else 1, key="teacher_type_radio")
+    teacher_type = st.radio(
+        "勤務形態",
+        ["担任", "専科（音楽・家庭科など）"],
+        index=0 if st.session_state["teacher_type"] == "担任" else 1,
+        key="teacher_type_radio"
+    )
     st.session_state["teacher_type"] = teacher_type
 
     grade_keys = list(STANDARD_HOURS.keys())
-    base_grade = st.selectbox("基準学年", grade_keys, index=grade_keys.index(st.session_state["base_grade"]) if st.session_state["base_grade"] in grade_keys else 0, key="base_grade_select")
+    base_grade = st.selectbox(
+        "基準学年",
+        grade_keys,
+        index=grade_keys.index(st.session_state["base_grade"]) if st.session_state["base_grade"] in grade_keys else 0,
+        key="base_grade_select"
+    )
     st.session_state["base_grade"] = base_grade
 
-    class_name = st.text_input("自分の担任学級（例：3-1）※担任でなければ空欄可", key="class_name_input")
-    if "class_name_input" not in st.session_state or not st.session_state["class_name_input"]:
-        st.session_state["class_name_input"] = st.session_state.get("class_name", "")
-    class_name = st.session_state["class_name_input"]
+    class_name = st.text_input(
+        "自分の担任学級（例：3-1）※担任でなければ空欄可",
+        key="class_name_input"
+    )
     st.session_state["class_name"] = class_name
 
-    week = st.date_input("対象週（週の初日：月曜日など）", key="week_date_input")
-    if "week_date_input" not in st.session_state:
-        st.session_state["week_date_input"] = st.session_state.get("week_date", date.today())
-    week = st.session_state["week_date_input"]
+    week = st.date_input(
+        "対象週（週の初日：月曜日など）",
+        key="week_date_input"
+    )
     st.session_state["week_date"] = week
     week_str = str(week)
 
@@ -1222,7 +1254,6 @@ if role == "教員":
         subject_options = ["（空欄）"] + ALL_SUBJECTS
         st.caption("※ 専科は、各コマで学級・教科を自由に選択できます。")
         st.info("この週に指導する学級をカンマ区切りで入力してください。（例：3-1,3-2,4-1）")
-        st.session_state.setdefault("classes_input", class_name)
         classes_input = st.text_input("指導学級一覧", key="classes_input")
         class_candidates = [c.strip() for c in classes_input.split(",") if c.strip()]
         if class_candidates:
