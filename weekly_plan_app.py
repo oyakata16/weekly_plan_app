@@ -1,13 +1,17 @@
 # weekly_plan_app.py
-# 東小松川小学校 週案管理システム 安定版 V6.4
+# 東小松川小学校 週案管理システム V7 完全統合版
 # ------------------------------------------------
-# 追加:
-# - パスワード変更機能
-# - 管理職画面で教員名を氏名優先表示
-# 維持:
-# - user_id基準の一時保存 / 自動保存 / 復元
-# - 教員 / 管理職のID・パスワードログイン
-# - 管理職登録コードによる管理職登録制御
+# 主な機能
+# - 教員 / 管理職のログイン
+# - 新規登録（管理職は登録コード必須）
+# - パスワード変更
+# - 教員名はログイン名を自動使用
+# - 下書き保存 / 自動保存 / 復元 / 前回の続き / 前週コピー
+# - 週案提出 / 管理職承認 / 差戻
+# - 年間時数集計 / 警告 / 最適化提案
+# - 探究活動ログ
+# - バックアップ / 区教委提出CSV
+# - 管理職画面では氏名優先表示
 # ------------------------------------------------
 
 import io
@@ -16,25 +20,28 @@ import re
 import sqlite3
 import hashlib
 from datetime import date
+from pathlib import Path
 from typing import Optional, List
 
 import pandas as pd
 import streamlit as st
 
-DEFAULT_ADMIN_PASSWORD = "higakoma2025"
-ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
+# =========================
+# 基本設定
+# =========================
+APP_DIR = Path(__file__).resolve().parent
+DB_PATH = str(APP_DIR / "weekly_plans.db")
 
 DEFAULT_MANAGER_SIGNUP_CODE = "school-admin-2026"
 MANAGER_SIGNUP_CODE = st.secrets.get("MANAGER_SIGNUP_CODE", DEFAULT_MANAGER_SIGNUP_CODE)
 
 DEFAULT_SCHOOL_YEAR = "令和8年度"
 DEFAULT_WEEKS_PER_YEAR = 35
-DB_PATH = "weekly_plans.db"
 
 st.set_page_config(page_title="週案管理システム", layout="wide")
 
 st.markdown(
-    '''
+    """
     <style>
     html, body, [class*="css"]  { font-size: 16px; }
     div[data-baseweb="select"] {
@@ -94,7 +101,7 @@ st.markdown(
         th, td { border: 1px solid #000 !important; padding: 4px !important; white-space: pre-wrap !important; }
     }
     </style>
-    ''',
+    """,
     unsafe_allow_html=True,
 )
 
@@ -105,17 +112,16 @@ PERIODS = ["1校時", "2校時", "3校時", "4校時", "5校時", "学校裁量"
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cur = conn.cursor()
 
-
-# =========================================================
+# =========================
 # 認証
-# =========================================================
+# =========================
 def hash_password(raw_password: str) -> str:
     return hashlib.sha256(str(raw_password).encode("utf-8")).hexdigest()
 
 
 def ensure_users_table():
     cur.execute(
-        '''
+        """
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
             display_name TEXT,
@@ -123,47 +129,76 @@ def ensure_users_table():
             role TEXT,
             created_at TEXT
         )
-        '''
+        """
     )
     conn.commit()
 
 
 def get_user(user_id: str):
     cur.execute(
-        "SELECT user_id, display_name, password_hash, role, created_at FROM users WHERE user_id=?",
-        (str(user_id).strip(),)
+        "SELECT user_id, display_name, password_hash, role, created_at FROM users WHERE TRIM(user_id)=?",
+        (str(user_id).strip(),),
     )
     return cur.fetchone()
+
+
+def count_users() -> int:
+    cur.execute("SELECT COUNT(*) FROM users")
+    row = cur.fetchone()
+    return int(row[0] or 0)
 
 
 def create_user(user_id: str, display_name: str, raw_password: str, role: str):
     cur.execute(
         "INSERT INTO users (user_id, display_name, password_hash, role, created_at) VALUES (?, ?, ?, ?, DATETIME('now'))",
-        (str(user_id).strip(), str(display_name).strip(), hash_password(raw_password), str(role).strip())
+        (
+            str(user_id).strip(),
+            str(display_name).strip(),
+            hash_password(raw_password),
+            str(role).strip(),
+        ),
     )
     conn.commit()
 
 
 def authenticate_user(user_id: str, raw_password: str):
-    row = get_user(user_id)
+    uid = str(user_id).strip()
+    pw = str(raw_password)
+    row = get_user(uid)
     if not row:
         return None
     _uid, _display_name, _pw_hash, _role, _created_at = row
-    if _pw_hash == hash_password(raw_password):
-        return {
-            "user_id": _uid,
-            "display_name": _display_name or _uid,
-            "role": _role,
-        }
+    if str(_pw_hash).strip() == hash_password(pw):
+        return {"user_id": _uid, "display_name": _display_name or _uid, "role": _role}
     return None
 
 
 def update_user_password(user_id: str, new_raw_password: str):
     cur.execute(
         "UPDATE users SET password_hash=? WHERE user_id=?",
-        (hash_password(new_raw_password), str(user_id).strip())
+        (hash_password(new_raw_password), str(user_id).strip()),
     )
     conn.commit()
+
+
+def get_user_display_name_by_id(user_id: str) -> str:
+    row = get_user(user_id)
+    if row and row[1]:
+        return str(row[1]).strip()
+    return str(user_id).strip()
+
+
+def teacher_label(user_id: str, teacher_name: str = "") -> str:
+    teacher_name = str(teacher_name or "").strip()
+    user_id = str(user_id or "").strip()
+    if teacher_name and user_id:
+        return f"{teacher_name}（{user_id}）"
+    if teacher_name:
+        return teacher_name
+    if user_id:
+        resolved = get_user_display_name_by_id(user_id)
+        return f"{resolved}（{user_id}）" if resolved != user_id else user_id
+    return "（不明）"
 
 
 def init_auth_session():
@@ -183,6 +218,16 @@ def logout():
 def render_login_screen():
     st.title("小学校 週の指導計画（週案）管理システム")
     st.subheader("ログイン / 新規登録")
+
+    try:
+        user_count = count_users()
+        if user_count == 0:
+            st.warning("現在、このDBには登録済みユーザーがいません。初回は新規登録を行ってください。")
+        else:
+            st.caption(f"登録済みユーザー数: {user_count} 名")
+            st.caption(f"使用DB: {DB_PATH}")
+    except Exception as e:
+        st.error(f"users テーブル確認でエラーが出ています: {e}")
 
     tab_login, tab_signup = st.tabs(["ログイン", "新規登録"])
 
@@ -238,25 +283,6 @@ def render_login_screen():
                     st.error(f"登録に失敗しました: {e}")
 
 
-def get_user_display_name_by_id(user_id: str) -> str:
-    cur.execute("SELECT display_name FROM users WHERE user_id=?", (str(user_id).strip(),))
-    row = cur.fetchone()
-    if row and row[0]:
-        return str(row[0]).strip()
-    return str(user_id).strip()
-
-
-def teacher_label(user_id: str, teacher_name: str = "") -> str:
-    teacher_name = str(teacher_name or "").strip()
-    user_id = str(user_id or "").strip()
-    if teacher_name:
-        return f"{teacher_name}（{user_id}）" if user_id else teacher_name
-    if user_id:
-        resolved = get_user_display_name_by_id(user_id)
-        return f"{resolved}（{user_id}）" if resolved != user_id else user_id
-    return "（不明）"
-
-
 ensure_users_table()
 init_auth_session()
 
@@ -264,10 +290,9 @@ if not st.session_state["logged_in"]:
     render_login_screen()
     st.stop()
 
-
-# =========================================================
-# DB・共通設定
-# =========================================================
+# =========================
+# 設定・DBテーブル
+# =========================
 def normalize_teacher_name(name: str) -> str:
     return str(name or "").strip()
 
@@ -303,7 +328,8 @@ def set_current_school_year(year_str: str):
 
 
 def ensure_weekly_plans_table():
-    cur.execute('''
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS weekly_plans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             school_year TEXT,
@@ -320,7 +346,8 @@ def ensure_weekly_plans_table():
             approved_at TEXT,
             approved_by TEXT
         )
-    ''')
+        """
+    )
     for col in [
         "school_year", "user_id", "teacher_name", "teacher", "grade", "class",
         "teacher_type", "week", "plan_json", "status", "submitted_at",
@@ -334,12 +361,17 @@ def ensure_weekly_plans_table():
 
 
 def ensure_hours_total_table():
-    cur.execute('''
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS hours_total (
-            school_year TEXT, grade TEXT, subject TEXT, consumed REAL,
+            school_year TEXT,
+            grade TEXT,
+            subject TEXT,
+            consumed REAL,
             PRIMARY KEY(school_year, grade, subject)
         )
-    ''')
+        """
+    )
     for col in ["school_year", "grade", "subject", "consumed"]:
         try:
             ctype = "REAL" if col == "consumed" else "TEXT"
@@ -350,24 +382,38 @@ def ensure_hours_total_table():
 
 
 def ensure_year_init_table():
-    cur.execute('''
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS year_init (
-            school_year TEXT PRIMARY KEY, initialized_at TEXT, initialized_by TEXT
+            school_year TEXT PRIMARY KEY,
+            initialized_at TEXT,
+            initialized_by TEXT
         )
-    ''')
+        """
+    )
     conn.commit()
 
 
 def ensure_inquiry_logs_table():
-    cur.execute('''
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS inquiry_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            school_year TEXT, week TEXT, grade TEXT, class TEXT,
-            teacher TEXT, teacher_name TEXT,
-            theme TEXT, goals TEXT, activities TEXT, evidence TEXT, reflection TEXT,
+            school_year TEXT,
+            week TEXT,
+            grade TEXT,
+            class TEXT,
+            teacher TEXT,
+            teacher_name TEXT,
+            theme TEXT,
+            goals TEXT,
+            activities TEXT,
+            evidence TEXT,
+            reflection TEXT,
             created_at TEXT
         )
-    ''')
+        """
+    )
     for col in [
         "school_year", "week", "grade", "class", "teacher", "teacher_name",
         "theme", "goals", "activities", "evidence", "reflection", "created_at"
@@ -380,7 +426,8 @@ def ensure_inquiry_logs_table():
 
 
 def ensure_autosave_table():
-    cur.execute('''
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS auto_save_sessions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             school_year TEXT,
@@ -395,7 +442,8 @@ def ensure_autosave_table():
             meta_json TEXT,
             saved_at TEXT
         )
-    ''')
+        """
+    )
     for col in [
         "school_year", "user_id", "teacher_name", "teacher", "grade", "class",
         "teacher_type", "week", "plan_json", "meta_json", "saved_at"
@@ -408,12 +456,17 @@ def ensure_autosave_table():
 
 
 def ensure_backup_log_table():
-    cur.execute('''
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS backup_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            school_year TEXT, created_at TEXT, created_by TEXT, filename TEXT
+            school_year TEXT,
+            created_at TEXT,
+            created_by TEXT,
+            filename TEXT
         )
-    ''')
+        """
+    )
     conn.commit()
 
 
@@ -425,30 +478,19 @@ ensure_autosave_table()
 ensure_backup_log_table()
 
 try:
-    cur.execute(
-        "UPDATE weekly_plans SET school_year=? WHERE school_year IS NULL OR school_year=''",
-        (DEFAULT_SCHOOL_YEAR,),
-    )
-    cur.execute(
-        "UPDATE hours_total SET school_year=? WHERE school_year IS NULL OR school_year=''",
-        (DEFAULT_SCHOOL_YEAR,),
-    )
-    cur.execute(
-        "UPDATE weekly_plans SET user_id=teacher WHERE (user_id IS NULL OR user_id='') AND teacher IS NOT NULL AND teacher<>''"
-    )
-    cur.execute(
-        "UPDATE weekly_plans SET teacher_name=teacher WHERE (teacher_name IS NULL OR teacher_name='') AND teacher IS NOT NULL AND teacher<>''"
-    )
-    cur.execute(
-        "UPDATE auto_save_sessions SET user_id=teacher WHERE (user_id IS NULL OR user_id='') AND teacher IS NOT NULL AND teacher<>''"
-    )
-    cur.execute(
-        "UPDATE auto_save_sessions SET teacher_name=teacher WHERE (teacher_name IS NULL OR teacher_name='') AND teacher IS NOT NULL AND teacher<>''"
-    )
+    cur.execute("UPDATE weekly_plans SET school_year=? WHERE school_year IS NULL OR school_year=''", (DEFAULT_SCHOOL_YEAR,))
+    cur.execute("UPDATE hours_total SET school_year=? WHERE school_year IS NULL OR school_year=''", (DEFAULT_SCHOOL_YEAR,))
+    cur.execute("UPDATE weekly_plans SET user_id=teacher WHERE (user_id IS NULL OR user_id='') AND teacher IS NOT NULL AND teacher<>''")
+    cur.execute("UPDATE weekly_plans SET teacher_name=teacher WHERE (teacher_name IS NULL OR teacher_name='') AND teacher IS NOT NULL AND teacher<>''")
+    cur.execute("UPDATE auto_save_sessions SET user_id=teacher WHERE (user_id IS NULL OR user_id='') AND teacher IS NOT NULL AND teacher<>''")
+    cur.execute("UPDATE auto_save_sessions SET teacher_name=teacher WHERE (teacher_name IS NULL OR teacher_name='') AND teacher IS NOT NULL AND teacher<>''")
     conn.commit()
 except Exception:
     pass
 
+# =========================
+# 教科・分数設定
+# =========================
 STANDARD_HOURS = {
     "1年": {"国語": 306, "算数": 140, "生活": 102, "音楽": 68, "図工": 68, "体育": 102, "道徳": 34, "特活": 34, "学校行事": 0, "読書科": 70, "学校裁量（学力向上）": 35, "学校裁量（探究）": 35},
     "2年": {"国語": 280, "算数": 140, "生活": 102, "音楽": 68, "図工": 68, "体育": 102, "道徳": 35, "特活": 35, "学校行事": 0, "読書科": 70, "学校裁量（学力向上）": 35, "学校裁量（探究）": 35},
@@ -471,10 +513,9 @@ for day in DAYS:
 
 EVENT_FRACTIONS = [("なし", 0.0), ("3/8", 3.0 / 8.0), ("6/8", 6.0 / 8.0), ("8/8（＝1）", 1.0)]
 
-
-# =========================================================
-# 共通処理
-# =========================================================
+# =========================
+# 共通関数
+# =========================
 def get_subjects_for_grade(grade: str) -> List[str]:
     return list(STANDARD_HOURS[grade].keys())
 
@@ -534,11 +575,7 @@ def safe_year_str(s: str) -> str:
 
 
 def empty_cell() -> dict:
-    return {
-        "class": "",
-        "event": {"fraction": 0.0, "content": ""},
-        "main": {"subject": "（空欄）", "content": ""}
-    }
+    return {"class": "", "event": {"fraction": 0.0, "content": ""}, "main": {"subject": "（空欄）", "content": ""}}
 
 
 def build_empty_timetable():
@@ -566,19 +603,13 @@ def normalize_timetable(tt):
             legacy_content = cell.get("content", "")
             out[day][period] = {
                 "class": cell.get("class", "") or "",
-                "event": {
-                    "fraction": float(event.get("fraction", 0.0) or 0.0),
-                    "content": event.get("content", "") or ""
-                },
-                "main": {
-                    "subject": (main.get("subject", "") or legacy_subject or "（空欄）"),
-                    "content": (main.get("content", "") or legacy_content or "")
-                },
+                "event": {"fraction": float(event.get("fraction", 0.0) or 0.0), "content": event.get("content", "") or ""},
+                "main": {"subject": (main.get("subject", "") or legacy_subject or "（空欄）"), "content": (main.get("content", "") or legacy_content or "")},
             }
     return out
 
 
-def apply_timetable_to_widget_state(timetable: dict, teacher_type: str, class_name: str):
+def apply_timetable_to_widget_state(timetable: dict, teacher_type: str):
     tt = normalize_timetable(timetable)
     for day in DAYS:
         for period in PERIODS:
@@ -607,37 +638,19 @@ def cell_to_segments(cell: dict, slot_minutes: float):
     remain_minutes = slot_minutes - event_minutes
 
     if event_minutes > 0:
-        segs.append({
-            "class": klass,
-            "subject": "学校行事",
-            "content": (event.get("content") or "").strip(),
-            "minutes": event_minutes,
-            "event_fraction": frac
-        })
+        segs.append({"class": klass, "subject": "学校行事", "content": (event.get("content") or "").strip(), "minutes": event_minutes, "event_fraction": frac})
 
     main = cell.get("main") or {}
     main_subj = (main.get("subject") or "").strip()
     main_cont = (main.get("content") or "").strip()
     if remain_minutes > 0 and (main_subj and main_subj != "（空欄）"):
-        segs.append({
-            "class": klass,
-            "subject": main_subj,
-            "content": main_cont,
-            "minutes": remain_minutes,
-            "event_fraction": 0.0
-        })
+        segs.append({"class": klass, "subject": main_subj, "content": main_cont, "minutes": remain_minutes, "event_fraction": 0.0})
 
     if frac == 0.0 and not segs:
         subj = (cell.get("subject") or "").strip()
         cont = (cell.get("content") or "").strip()
         if subj and subj != "（空欄）":
-            segs.append({
-                "class": klass,
-                "subject": subj,
-                "content": cont,
-                "minutes": slot_minutes,
-                "event_fraction": 0.0
-            })
+            segs.append({"class": klass, "subject": subj, "content": cont, "minutes": slot_minutes, "event_fraction": 0.0})
     return segs
 
 
@@ -802,27 +815,26 @@ def build_optimization_suggestions(school_year: str) -> pd.DataFrame:
 def user_where_clause(column="user_id"):
     return f"TRIM(COALESCE({column},'')) = ?"
 
-
-# =========================================================
-# 週案 / 下書き / 自動保存（user_id基準）
-# =========================================================
+# =========================
+# 週案 / 自動保存 / 下書き
+# =========================
 def upsert_draft(school_year: str, user_id: str, teacher_name: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
     user_id = str(user_id).strip()
     teacher_name = normalize_teacher_name(teacher_name)
     cur.execute(
         f"SELECT id FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1",
-        (school_year, user_id, week_str)
+        (school_year, user_id, week_str),
     )
     row = cur.fetchone()
     if row:
         cur.execute(
             "UPDATE weekly_plans SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, submitted_at=DATETIME('now') WHERE id=?",
-            (user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0])
+            (user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0]),
         )
     else:
         cur.execute(
             "INSERT INTO weekly_plans (school_year, user_id, teacher_name, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '下書き', DATETIME('now'))",
-            (school_year, user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False))
+            (school_year, user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False)),
         )
     conn.commit()
 
@@ -831,7 +843,7 @@ def list_my_drafts(school_year: str, user_id: str):
     user_id = str(user_id).strip()
     cur.execute(
         f"SELECT id, week, grade, class, teacher_type, plan_json, submitted_at FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND status='下書き' ORDER BY week DESC, id DESC",
-        (school_year, user_id)
+        (school_year, user_id),
     )
     return cur.fetchall()
 
@@ -845,7 +857,7 @@ def fetch_latest_plan_before_week(school_year: str, user_id: str, week_str: str)
     user_id = str(user_id).strip()
     cur.execute(
         f"SELECT plan_json, week, status FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND week < ? AND status IN ('提出','承認','差戻','下書き') ORDER BY week DESC, id DESC LIMIT 1",
-        (school_year, user_id, week_str)
+        (school_year, user_id, week_str),
     )
     return cur.fetchone()
 
@@ -855,18 +867,18 @@ def submit_plan_from_current(school_year: str, user_id: str, teacher_name: str, 
     teacher_name = normalize_teacher_name(teacher_name)
     cur.execute(
         f"SELECT id FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1",
-        (school_year, user_id, week_str)
+        (school_year, user_id, week_str),
     )
     row = cur.fetchone()
     if row:
         cur.execute(
             "UPDATE weekly_plans SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, status='提出', submitted_at=DATETIME('now') WHERE id=?",
-            (user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0])
+            (user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), row[0]),
         )
     else:
         cur.execute(
             "INSERT INTO weekly_plans (school_year, user_id, teacher_name, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '提出', DATETIME('now'))",
-            (school_year, user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False))
+            (school_year, user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False)),
         )
     conn.commit()
 
@@ -876,7 +888,7 @@ def upsert_autosave(school_year: str, user_id: str, teacher_name: str, base_grad
     teacher_name = normalize_teacher_name(teacher_name)
     cur.execute(
         f"SELECT id FROM auto_save_sessions WHERE school_year=? AND {user_where_clause('user_id')} AND week=? ORDER BY id DESC LIMIT 1",
-        (school_year, user_id, week_str)
+        (school_year, user_id, week_str),
     )
     row = cur.fetchone()
     meta = {
@@ -886,17 +898,17 @@ def upsert_autosave(school_year: str, user_id: str, teacher_name: str, base_grad
         "grade": base_grade,
         "class": class_name,
         "teacher_type": teacher_type,
-        "week": week_str
+        "week": week_str,
     }
     if row:
         cur.execute(
             "UPDATE auto_save_sessions SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, meta_json=?, saved_at=DATETIME('now') WHERE id=?",
-            (user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False), row[0])
+            (user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False), row[0]),
         )
     else:
         cur.execute(
             "INSERT INTO auto_save_sessions (school_year, user_id, teacher_name, teacher, grade, class, teacher_type, week, plan_json, meta_json, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))",
-            (school_year, user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False))
+            (school_year, user_id, teacher_name, teacher_name, base_grade, class_name, teacher_type, week_str, json.dumps(plan, ensure_ascii=False), json.dumps(meta, ensure_ascii=False)),
         )
     conn.commit()
 
@@ -905,7 +917,7 @@ def list_autosaves(school_year: str, user_id: str):
     user_id = str(user_id).strip()
     cur.execute(
         f"SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND {user_where_clause('user_id')} ORDER BY saved_at DESC, id DESC",
-        (school_year, user_id)
+        (school_year, user_id),
     )
     return cur.fetchall()
 
@@ -914,7 +926,7 @@ def fetch_latest_autosave(school_year: str, user_id: str):
     user_id = str(user_id).strip()
     cur.execute(
         f"SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND {user_where_clause('user_id')} ORDER BY saved_at DESC, id DESC LIMIT 1",
-        (school_year, user_id)
+        (school_year, user_id),
     )
     return cur.fetchone()
 
@@ -927,7 +939,7 @@ def load_autosave_by_id(sid: int):
 def add_inquiry_log(school_year: str, week: str, grade: str, class_name: str, teacher: str, teacher_name: str, theme: str, goals: str, activities: str, evidence: str, reflection: str):
     cur.execute(
         "INSERT INTO inquiry_logs (school_year, week, grade, class, teacher, teacher_name, theme, goals, activities, evidence, reflection, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, DATETIME('now'))",
-        (school_year, week, grade, class_name, teacher, teacher_name, theme, goals, activities, evidence, reflection)
+        (school_year, week, grade, class_name, teacher, teacher_name, theme, goals, activities, evidence, reflection),
     )
     conn.commit()
 
@@ -961,15 +973,7 @@ def aggregate_events_from_plans(plans_rows) -> pd.DataFrame:
         for gg, mp in week_mins.items():
             ev = float(mp.get("学校行事", 0.0))
             if ev > 0:
-                out.append({
-                    "年度": sy,
-                    "週": week,
-                    "学年": gg,
-                    "教員": teacher_label(user_id, teacher_name),
-                    "状態": status,
-                    "学校行事(分)": int(round(ev)),
-                    "学校行事(45分コマ)": round(convert_to_45(ev), 2)
-                })
+                out.append({"年度": sy, "週": week, "学年": gg, "教員": teacher_label(user_id, teacher_name), "状態": status, "学校行事(分)": int(round(ev)), "学校行事(45分コマ)": round(convert_to_45(ev), 2)})
     return pd.DataFrame(out)
 
 
@@ -1010,14 +1014,13 @@ def auto_fill_timetable_proposal(school_year: str, teacher_type: str, base_grade
             tt[day][period] = {
                 "class": klass,
                 "event": {"fraction": frac, "content": ((cell.get("event") or {}).get("content") or "")},
-                "main": {"subject": subj, "content": "（提案）単元名／ねらい／評価観点を入力"}
+                "main": {"subject": subj, "content": "（提案）単元名／ねらい／評価観点を入力"},
             }
     return tt
 
-
-# =========================================================
+# =========================
 # ログイン後共通
-# =========================================================
+# =========================
 current_school_year = get_current_school_year()
 auth_user_id = st.session_state["auth_user_id"]
 auth_display_name = st.session_state["auth_display_name"]
@@ -1031,6 +1034,7 @@ st.sidebar.write(f"氏名：**{auth_display_name}**")
 st.sidebar.write(f"権限：**{role}**")
 st.sidebar.markdown("---")
 st.sidebar.write(f"📅 現在の年度：**{current_school_year}**")
+st.sidebar.caption(f"DB: {DB_PATH}")
 
 with st.sidebar.expander("🔑 パスワード変更", expanded=False):
     current_pw = st.text_input("現在のパスワード", type="password", key="pw_change_current")
@@ -1053,13 +1057,13 @@ st.sidebar.markdown("---")
 if st.sidebar.button("ログアウト", key="logout_btn"):
     logout()
 
-
-# ======================================================
+# =========================
 # 教員画面
-# ======================================================
+# =========================
 if role == "教員":
     st.header("📘 週案の作成・提出（教員用）")
     st.caption(f"提出先年度：{current_school_year}（管理職が設定）")
+    st.info(f"ログイン中の利用者：{auth_display_name}（ID: {auth_user_id}）")
 
     st.session_state.setdefault("teacher_type", "担任")
     st.session_state.setdefault("base_grade", "3年")
@@ -1070,8 +1074,6 @@ if role == "教員":
 
     teacher_key = auth_user_id
     teacher_display = auth_display_name
-
-    st.info(f"ログイン中の利用者：{teacher_display}（ID: {teacher_key}）")
 
     st.markdown("---")
     st.subheader("🗂 下書き一覧（復元）")
@@ -1104,7 +1106,7 @@ if role == "教員":
                 except Exception:
                     pass
 
-                apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
+                apply_timetable_to_widget_state(restored_tt, restored_teacher_type)
                 st.session_state["restore_notice"] = True
                 st.success("下書きを復元しました。")
                 st.rerun()
@@ -1139,7 +1141,7 @@ if role == "教員":
                 except Exception:
                     pass
 
-                apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
+                apply_timetable_to_widget_state(restored_tt, restored_teacher_type)
                 st.session_state["restore_notice"] = True
                 st.success("前回の自動保存から再開しました。")
                 st.rerun()
@@ -1181,7 +1183,7 @@ if role == "教員":
                 except Exception:
                     pass
 
-                apply_timetable_to_widget_state(restored_tt, restored_teacher_type, restored_class)
+                apply_timetable_to_widget_state(restored_tt, restored_teacher_type)
                 st.session_state["restore_notice"] = True
                 st.success("自動保存データを復元しました。")
                 st.rerun()
@@ -1192,35 +1194,23 @@ if role == "教員":
         st.info("復元しました（勤務形態／基準学年／週／学級／表の中身を反映）。")
         st.session_state["restore_notice"] = False
 
-    teacher_type = st.radio(
-        "勤務形態",
-        ["担任", "専科（音楽・家庭科など）"],
-        index=0 if st.session_state["teacher_type"] == "担任" else 1,
-        key="teacher_type_radio"
-    )
+    teacher_type = st.radio("勤務形態", ["担任", "専科（音楽・家庭科など）"], index=0 if st.session_state["teacher_type"] == "担任" else 1, key="teacher_type_radio")
     st.session_state["teacher_type"] = teacher_type
 
     grade_keys = list(STANDARD_HOURS.keys())
-    base_grade = st.selectbox(
-        "基準学年",
-        grade_keys,
-        index=grade_keys.index(st.session_state["base_grade"]) if st.session_state["base_grade"] in grade_keys else 0,
-        key="base_grade_select"
-    )
+    base_grade = st.selectbox("基準学年", grade_keys, index=grade_keys.index(st.session_state["base_grade"]) if st.session_state["base_grade"] in grade_keys else 0, key="base_grade_select")
     st.session_state["base_grade"] = base_grade
 
-    class_name = st.text_input(
-        "自分の担任学級（例：3-1）※担任でなければ空欄可",
-        value=st.session_state.get("class_name", ""),
-        key="class_name_input"
-    )
+    class_name = st.text_input("自分の担任学級（例：3-1）※担任でなければ空欄可", key="class_name_input")
+    if "class_name_input" not in st.session_state or not st.session_state["class_name_input"]:
+        st.session_state["class_name_input"] = st.session_state.get("class_name", "")
+    class_name = st.session_state["class_name_input"]
     st.session_state["class_name"] = class_name
 
-    week = st.date_input(
-        "対象週（週の初日：月曜日など）",
-        value=st.session_state.get("week_date", date.today()),
-        key="week_date_input"
-    )
+    week = st.date_input("対象週（週の初日：月曜日など）", key="week_date_input")
+    if "week_date_input" not in st.session_state:
+        st.session_state["week_date_input"] = st.session_state.get("week_date", date.today())
+    week = st.session_state["week_date_input"]
     st.session_state["week_date"] = week
     week_str = str(week)
 
@@ -1232,7 +1222,8 @@ if role == "教員":
         subject_options = ["（空欄）"] + ALL_SUBJECTS
         st.caption("※ 専科は、各コマで学級・教科を自由に選択できます。")
         st.info("この週に指導する学級をカンマ区切りで入力してください。（例：3-1,3-2,4-1）")
-        classes_input = st.text_input("指導学級一覧", value=class_name, key="classes_input")
+        st.session_state.setdefault("classes_input", class_name)
+        classes_input = st.text_input("指導学級一覧", key="classes_input")
         class_candidates = [c.strip() for c in classes_input.split(",") if c.strip()]
         if class_candidates:
             st.caption("この週に指導する学級：" + "、".join(class_candidates))
@@ -1254,7 +1245,7 @@ if role == "教員":
 
             restored_tt = normalize_timetable(prev_plan.get("timetable", {}))
             st.session_state["restore_plan"] = {"timetable": restored_tt}
-            apply_timetable_to_widget_state(restored_tt, teacher_type, class_name)
+            apply_timetable_to_widget_state(restored_tt, teacher_type)
             st.success(f"前週（{prev_week}）をコピーしました。")
             st.rerun()
 
@@ -1263,17 +1254,10 @@ if role == "教員":
     if st.button("🤖 空欄コマに教科を提案して自動入力", key="auto_fill_btn"):
         restore_plan = st.session_state.get("restore_plan") or {"timetable": normalize_timetable({})}
         tt = normalize_timetable(restore_plan.get("timetable", {}))
-        tt = auto_fill_timetable_proposal(
-            current_school_year,
-            teacher_type,
-            base_grade,
-            class_name,
-            class_candidates,
-            tt
-        )
+        tt = auto_fill_timetable_proposal(current_school_year, teacher_type, base_grade, class_name, class_candidates, tt)
 
         st.session_state["restore_plan"] = {"timetable": tt}
-        apply_timetable_to_widget_state(tt, teacher_type, class_name)
+        apply_timetable_to_widget_state(tt, teacher_type)
         st.success("空欄コマへ教科提案を反映しました。")
         st.rerun()
 
@@ -1292,7 +1276,7 @@ if role == "教員":
         if st.button("🔄 入替する", key="swap_btn"):
             timetable = swap_cells_in_timetable(timetable, day_from, period_from, day_to, period_to)
             st.session_state["restore_plan"] = {"timetable": timetable}
-            apply_timetable_to_widget_state(timetable, teacher_type, class_name)
+            apply_timetable_to_widget_state(timetable, teacher_type)
             st.success("入替しました。")
             st.rerun()
 
@@ -1333,19 +1317,14 @@ if role == "教員":
                     default_event = default_cell.get("event") or {}
                     default_main = default_cell.get("main") or {}
 
-                    default_event_frac_label = fraction_value_to_label(float(default_event.get("fraction", 0.0) or 0.0))
-                    default_event_content = (default_event.get("content") or "").strip()
-                    default_main_subject = (default_main.get("subject") or "（空欄）").strip()
-                    default_main_content = (default_main.get("content") or "").strip()
-
                     if f"{day}_{period}_eventfrac" not in st.session_state:
-                        st.session_state[f"{day}_{period}_eventfrac"] = default_event_frac_label
+                        st.session_state[f"{day}_{period}_eventfrac"] = fraction_value_to_label(float(default_event.get("fraction", 0.0) or 0.0))
                     if f"{day}_{period}_eventcont" not in st.session_state:
-                        st.session_state[f"{day}_{period}_eventcont"] = default_event_content
+                        st.session_state[f"{day}_{period}_eventcont"] = (default_event.get("content") or "").strip()
                     if f"{day}_{period}_mainsubj" not in st.session_state:
-                        st.session_state[f"{day}_{period}_mainsubj"] = default_main_subject
+                        st.session_state[f"{day}_{period}_mainsubj"] = (default_main.get("subject") or "（空欄）").strip()
                     if f"{day}_{period}_maincont" not in st.session_state:
-                        st.session_state[f"{day}_{period}_maincont"] = default_main_content
+                        st.session_state[f"{day}_{period}_maincont"] = (default_main.get("content") or "").strip()
                     if teacher_type.startswith("専科") and f"{day}_{period}_class" not in st.session_state:
                         st.session_state[f"{day}_{period}_class"] = default_class if default_class else "（未選択）"
 
@@ -1359,13 +1338,7 @@ if role == "教員":
                             opts = ["（未選択）"] + class_candidates
                             if st.session_state.get(f"{day}_{period}_class", "（未選択）") not in opts:
                                 st.session_state[f"{day}_{period}_class"] = "（未選択）"
-
-                            klass_selected = st.selectbox(
-                                "学級",
-                                opts,
-                                key=f"{day}_{period}_class",
-                                label_visibility="collapsed"
-                            )
+                            klass_selected = st.selectbox("学級", opts, key=f"{day}_{period}_class", label_visibility="collapsed")
                             klass = "" if klass_selected == "（未選択）" else klass_selected
                         else:
                             klass = ""
@@ -1373,12 +1346,7 @@ if role == "教員":
                         klass = class_name
 
                     st.markdown('<div class="tt-section tt-event">🟨 学校行事（配分）</div>', unsafe_allow_html=True)
-                    event_label = st.selectbox(
-                        "学校行事（配分）",
-                        event_opts,
-                        key=f"{day}_{period}_eventfrac",
-                        label_visibility="collapsed"
-                    )
+                    event_label = st.selectbox("学校行事（配分）", event_opts, key=f"{day}_{period}_eventfrac", label_visibility="collapsed")
                     st.markdown('<div class="tt-mini">※ 3/8・6/8・8/8 を選択できます。</div>', unsafe_allow_html=True)
 
                     event_frac = fraction_label_to_value(event_label)
@@ -1388,12 +1356,7 @@ if role == "教員":
                     event_content = ""
                     if event_frac > 0:
                         st.markdown('<div class="tt-section tt-event">🟨 学校行事（内容）</div>', unsafe_allow_html=True)
-                        event_content = st.text_area(
-                            "学校行事 内容",
-                            key=f"{day}_{period}_eventcont",
-                            height=45,
-                            label_visibility="collapsed"
-                        )
+                        event_content = st.text_area("学校行事 内容", key=f"{day}_{period}_eventcont", height=45, label_visibility="collapsed")
 
                     main_subject = "（空欄）"
                     main_content = ""
@@ -1401,25 +1364,10 @@ if role == "教員":
                         st.markdown('<div class="tt-section tt-main">🟦 残り教科等</div>', unsafe_allow_html=True)
                         st.markdown(f'<div class="tt-mini">残り：{int(round(remain_minutes))}分</div>', unsafe_allow_html=True)
 
-                        main_subject = st.selectbox(
-                            "残り枠の教科等",
-                            subject_options,
-                            key=f"{day}_{period}_mainsubj",
-                            label_visibility="collapsed"
-                        )
-                        main_content = st.text_area(
-                            "残り枠の内容",
-                            key=f"{day}_{period}_maincont",
-                            height=55,
-                            label_visibility="collapsed"
-                        )
+                        main_subject = st.selectbox("残り枠の教科等", subject_options, key=f"{day}_{period}_mainsubj", label_visibility="collapsed")
+                        main_content = st.text_area("残り枠の内容", key=f"{day}_{period}_maincont", height=55, label_visibility="collapsed")
 
-                    timetable[day][period] = {
-                        "class": klass,
-                        "event": {"fraction": event_frac, "content": event_content},
-                        "main": {"subject": main_subject, "content": main_content}
-                    }
-
+                    timetable[day][period] = {"class": klass, "event": {"fraction": event_frac, "content": event_content}, "main": {"subject": main_subject, "content": main_content}}
                     st.markdown("</div>", unsafe_allow_html=True)
 
     st.session_state["restore_plan"] = {"timetable": timetable}
@@ -1428,7 +1376,7 @@ if role == "教員":
         upsert_autosave(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
         cur.execute(
             f"SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND {user_where_clause('user_id')} AND week=? ORDER BY id DESC LIMIT 1",
-            (current_school_year, teacher_key, week_str)
+            (current_school_year, teacher_key, week_str),
         )
         row = cur.fetchone()
         if row:
@@ -1480,18 +1428,18 @@ if role == "教員":
     st.markdown("---")
     st.subheader("⭐ 探究活動ログ（総合 / 学校裁量（探究）など）")
     with st.expander("➕ 探究ログを追加", expanded=False):
-        theme = st.text_input("テーマ", value="", key="inq_theme")
-        goals = st.text_area("ねらい（育てたい力）", value="", height=80, key="inq_goals")
-        activities = st.text_area("活動（学習の流れ）", value="", height=100, key="inq_activities")
-        evidence = st.text_area("証拠（成果物 / 写真 / 発表 / ルーブリック等）", value="", height=80, key="inq_evidence")
-        reflection = st.text_area("振り返り（児童 / 教師）", value="", height=100, key="inq_reflection")
+        theme = st.text_input("テーマ", key="inq_theme")
+        goals = st.text_area("ねらい（育てたい力）", key="inq_goals", height=80)
+        activities = st.text_area("活動（学習の流れ）", key="inq_activities", height=100)
+        evidence = st.text_area("証拠（成果物 / 写真 / 発表 / ルーブリック等）", key="inq_evidence", height=80)
+        reflection = st.text_area("振り返り（児童 / 教師）", key="inq_reflection", height=100)
         if st.button("保存する", key="inq_save_btn"):
             add_inquiry_log(current_school_year, week_str, base_grade, class_name, teacher_key, teacher_display, theme, goals, activities, evidence, reflection)
             st.success("探究ログを保存しました。")
 
     with st.expander("📚 自分 / 学年の探究ログを確認", expanded=False):
-        gsel = st.selectbox("学年", ["すべて"] + list(STANDARD_HOURS.keys()), index=0, key="inq_grade_filter")
-        csel = st.text_input("学級（空欄で全学級）", value="", key="inq_class_filter")
+        gsel = st.selectbox("学年", ["すべて"] + list(STANDARD_HOURS.keys()), key="inq_grade_filter")
+        csel = st.text_input("学級（空欄で全学級）", key="inq_class_filter")
         tsel = st.text_input("教員ID（空欄で全教員）", value=teacher_key, key="inq_teacher_filter")
         logs = fetch_inquiry_logs(current_school_year, grade=gsel, class_name=csel, teacher=tsel)
         if not logs:
@@ -1532,10 +1480,9 @@ if role == "教員":
             st.dataframe(df_print, use_container_width=True, height=520)
             st.info("ブラウザの印刷機能（Ctrl+P）から PDF 保存・印刷を行ってください。")
 
-
-# ======================================================
+# =========================
 # 管理職画面
-# ======================================================
+# =========================
 if role == "管理職":
     st.header("🧭 年度の管理（管理職）")
 
@@ -1601,10 +1548,7 @@ if role == "管理職":
         cda1, cda2 = st.columns(2)
         with cda1:
             st.subheader("提出状況（教員別）")
-            df_plans["教員表示"] = df_plans.apply(
-                lambda r: teacher_label(r["user_id"], r["teacher_name"]),
-                axis=1
-            )
+            df_plans["教員表示"] = df_plans.apply(lambda r: teacher_label(r["user_id"], r["teacher_name"]), axis=1)
             by_teacher = df_plans.groupby(["教員表示", "status"]).size().reset_index(name="count")
             pivot = by_teacher.pivot_table(index="教員表示", columns="status", values="count", fill_value=0)
             st.dataframe(pivot.reset_index(), use_container_width=True, height=240)
@@ -1829,7 +1773,7 @@ if role == "管理職":
         st.session_state["backup_csv_pack"] = {
             "weekly_plans": df_plans.to_csv(index=False).encode("utf-8-sig"),
             "weekly_slots": df_slots.to_csv(index=False).encode("utf-8-sig"),
-            "hours_progress": df_hours.to_csv(index=False).encode("utf-8-sig")
+            "hours_progress": df_hours.to_csv(index=False).encode("utf-8-sig"),
         }
         st.session_state["backup_filename"] = filename
         log_backup(view_year, created_by=auth_user_id, filename=filename)
@@ -1858,17 +1802,14 @@ if role == "管理職":
 
     st.markdown("---")
     st.header("⭐ 探究活動ログ（管理職）")
-    gsel2 = st.selectbox("学年フィルタ", ["すべて"] + list(STANDARD_HOURS.keys()), index=0, key="inq_m_grade")
-    csel2 = st.text_input("学級フィルタ（空欄で全学級）", value="", key="inq_m_class")
-    tsel2 = st.text_input("教員IDフィルタ（空欄で全教員）", value="", key="inq_m_teacher")
+    gsel2 = st.selectbox("学年フィルタ", ["すべて"] + list(STANDARD_HOURS.keys()), key="inq_m_grade")
+    csel2 = st.text_input("学級フィルタ（空欄で全学級）", key="inq_m_class")
+    tsel2 = st.text_input("教員IDフィルタ（空欄で全教員）", key="inq_m_teacher")
     logs2 = fetch_inquiry_logs(view_year, grade=gsel2, class_name=csel2, teacher=tsel2)
     if not logs2:
         st.info("探究ログはまだありません。")
     else:
-        df_logs2 = pd.DataFrame(
-            logs2,
-            columns=["id","school_year","week","grade","class","teacher","teacher_name","theme","goals","activities","evidence","reflection","created_at"]
-        )
+        df_logs2 = pd.DataFrame(logs2, columns=["id","school_year","week","grade","class","teacher","teacher_name","theme","goals","activities","evidence","reflection","created_at"])
         df_logs2["教員表示"] = df_logs2.apply(lambda r: teacher_label(r["teacher"], r["teacher_name"]), axis=1)
         df_logs2 = df_logs2.drop(columns=["school_year"])
         df_logs2 = df_logs2.rename(columns={"teacher": "教員ID", "teacher_name": "教員名"})
