@@ -1840,7 +1840,7 @@ with c4:
         """,
         unsafe_allow_html=True
     )
-        cda1, cda2 = st.columns(2)
+    cda1, cda2 = st.columns(2)
         with cda1:
             st.subheader("提出状況（教員別）")
             df_plans["教員表示"] = df_plans.apply(lambda r: teacher_label(r["user_id"], r["teacher_name"]), axis=1)
