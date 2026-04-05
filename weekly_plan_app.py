@@ -1739,17 +1739,22 @@ if role == "管理職":
 
     st.markdown("---")
     st.header("⭐ ダッシュボード（管理職）")
-    if all_rows:
-        df_plans = pd.DataFrame(all_rows, columns=["id","school_year","user_id","teacher_name","grade","class","teacher_type","week","plan_json","status","submitted_at","approved_at","approved_by"])
-st.subheader("提出状況（件数）")
-counts = df_plans["status"].value_counts().to_dict()
+if all_rows:
+    df_plans = pd.DataFrame(all_rows, columns=[...])
 
-draft_count = int(counts.get("下書き", 0))
-submitted_count = int(counts.get("提出", 0))
-approved_count = int(counts.get("承認", 0))
-rejected_count = int(counts.get("差戻", 0))
+    st.subheader("提出状況（件数）")
+    counts = df_plans["status"].value_counts().to_dict()
 
-c1, c2, c3, c4 = st.columns(4)
+    draft_count = int(counts.get("下書き", 0))
+    submitted_count = int(counts.get("提出", 0))
+    approved_count = int(counts.get("承認", 0))
+    rejected_count = int(counts.get("差戻", 0))
+
+    c1, c2, c3, c4 = st.columns(4)
+
+    # ←ここにカード表示（インデント全部4スペース）
+
+    cda1, cda2 = st.columns(2)
 
 with c1:
     st.markdown(
