@@ -1771,7 +1771,7 @@ if all_rows:
     with c4:
         st.metric("差戻", rejected_count)
 
-    cda1, cda2 = st.columns(2)
+cda1, cda2 = st.columns(2)
 
 with c1:
     st.markdown(
