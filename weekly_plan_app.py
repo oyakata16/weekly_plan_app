@@ -1741,10 +1741,83 @@ if role == "管理職":
     st.header("⭐ ダッシュボード（管理職）")
     if all_rows:
         df_plans = pd.DataFrame(all_rows, columns=["id","school_year","user_id","teacher_name","grade","class","teacher_type","week","plan_json","status","submitted_at","approved_at","approved_by"])
-        st.subheader("提出状況（件数）")
-        counts = df_plans["status"].value_counts().to_dict()
-        st.write({k: int(v) for k, v in counts.items()})
+st.subheader("提出状況（件数）")
+counts = df_plans["status"].value_counts().to_dict()
 
+draft_count = int(counts.get("下書き", 0))
+submitted_count = int(counts.get("提出", 0))
+approved_count = int(counts.get("承認", 0))
+rejected_count = int(counts.get("差戻", 0))
+
+c1, c2, c3, c4 = st.columns(4)
+
+with c1:
+    st.markdown(
+        f"""
+        <div style="
+            background:#f4f6f8;
+            border:1px solid #d0d7de;
+            border-radius:12px;
+            padding:16px;
+            text-align:center;
+        ">
+            <div style="font-size:14px; color:#555;">下書き</div>
+            <div style="font-size:32px; font-weight:700; color:#7f8c8d;">{draft_count}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+with c2:
+    st.markdown(
+        f"""
+        <div style="
+            background:#fff8e1;
+            border:1px solid #f1c40f;
+            border-radius:12px;
+            padding:16px;
+            text-align:center;
+        ">
+            <div style="font-size:14px; color:#555;">提出</div>
+            <div style="font-size:32px; font-weight:700; color:#f39c12;">{submitted_count}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+with c3:
+    st.markdown(
+        f"""
+        <div style="
+            background:#eafaf1;
+            border:1px solid #27ae60;
+            border-radius:12px;
+            padding:16px;
+            text-align:center;
+        ">
+            <div style="font-size:14px; color:#555;">承認</div>
+            <div style="font-size:32px; font-weight:700; color:#27ae60;">{approved_count}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+with c4:
+    st.markdown(
+        f"""
+        <div style="
+            background:#fdecea;
+            border:1px solid #c0392b;
+            border-radius:12px;
+            padding:16px;
+            text-align:center;
+        ">
+            <div style="font-size:14px; color:#555;">差戻</div>
+            <div style="font-size:32px; font-weight:700; color:#c0392b;">{rejected_count}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
         cda1, cda2 = st.columns(2)
         with cda1:
             st.subheader("提出状況（教員別）")
