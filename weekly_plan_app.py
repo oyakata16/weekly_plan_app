@@ -73,16 +73,26 @@ st.markdown(
         padding: 6px 6px 2px 6px !important; margin: 2px 0 6px 0 !important;
         background: rgba(255,255,255,0.80);
     }
-    .tt-rowlabel {
-        border: 1px solid #999 !important; border-radius: 6px !important;
-        padding: 8px 6px !important; margin: 2px 0 6px 0 !important;
-        background: rgba(245,245,245,0.95); font-weight: 700; text-align: center;
-    }
-    .tt-headcell {
-        border: 1px solid #999 !important; border-radius: 6px !important;
-        padding: 8px 6px !important; margin: 2px 0 6px 0 !important;
-        background: rgba(235,235,235,0.95); font-weight: 800; text-align: center;
-    }
+.tt-rowlabel {
+    border: 1px solid #999 !important;
+    border-radius: 6px !important;
+    padding: 8px 6px !important;
+    margin: 2px 0 6px 0 !important;
+    background: #e0e0e0 !important;
+    font-weight: 700;
+    text-align: center;
+    color: #000000 !important;   /* ← これ追加が重要 */
+}
+.tt-rowlabel {
+    border: 1px solid #999 !important;
+    border-radius: 6px !important;
+    padding: 8px 6px !important;
+    margin: 2px 0 6px 0 !important;
+    background: #e0e0e0 !important;
+    font-weight: 700;
+    text-align: center;
+    color: #000000 !important;   /* ← これ追加が重要 */
+}
     .tt-section {
         font-size: 12px; font-weight: 800; padding: 2px 6px; border-radius: 999px;
         display: inline-block; margin: 2px 0 4px 0; border: 1px solid #777;
