@@ -108,11 +108,86 @@ st.markdown(
         border: 1px solid #000 !important; border-radius: 0px !important; box-shadow: none !important;
     }
     @media print {
-        header, footer, .stSidebar { display: none !important; }
-        .main .block-container { padding-top: 0px !important; padding-bottom: 0px !important; }
-        table { width: 100% !important; font-size: 11px !important; border-collapse: collapse !important; }
-        th, td { border: 1px solid #000 !important; padding: 4px !important; white-space: pre-wrap !important; }
+        /* ======= 印刷レイアウト（A4縦1枚フィット） ======= */
+        @page {
+            size: A4 portrait;
+            margin: 8mm 8mm 8mm 8mm;
+        }
+        /* 不要なUI要素を非表示 */
+        header, footer, .stSidebar,
+        [data-testid="stToolbar"],
+        [data-testid="stDecoration"],
+        [data-testid="stStatusWidget"],
+        button, .stButton,
+        [data-testid="stSidebar"],
+        section[data-testid="stSidebar"],
+        .stCheckbox, .stSelectbox, .stDateInput,
+        .stTextInput, .stTextArea, .stRadio,
+        hr, .stMarkdown hr,
+        [data-testid="stExpander"] summary,
+        .stAlert, .stInfo, .stWarning, .stSuccess,
+        .no-print { display: none !important; }
+
+        /* メインコンテナ */
+        .main .block-container {
+            padding: 0 !important;
+            margin: 0 !important;
+            max-width: 100% !important;
+        }
+        html, body { font-size: 9px !important; }
+
+        /* 印刷対象の週案テーブル */
+        .print-timetable {
+            display: block !important;
+            page-break-inside: avoid;
+        }
+        table.print-weekly-table {
+            width: 100% !important;
+            font-size: 8px !important;
+            border-collapse: collapse !important;
+            table-layout: fixed !important;
+            page-break-inside: avoid !important;
+        }
+        table.print-weekly-table th,
+        table.print-weekly-table td {
+            border: 1px solid #000 !important;
+            padding: 2px 3px !important;
+            vertical-align: top !important;
+            word-break: break-word !important;
+            line-height: 1.3 !important;
+        }
+        table.print-weekly-table th {
+            background: #e0e0e0 !important;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            font-weight: bold !important;
+            text-align: center !important;
+        }
+        .print-header { font-size: 10px !important; margin-bottom: 3mm !important; }
+        .print-cell-subject { font-weight: bold; }
+        .print-cell-content { font-size: 7.5px; color: #333; }
+        .print-cell-event { background: #fff4cc !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+        /* dataframe（streamlit標準テーブル）フォールバック */
+        .stDataFrame table {
+            width: 100% !important;
+            font-size: 8px !important;
+            border-collapse: collapse !important;
+        }
+        .stDataFrame th, .stDataFrame td {
+            border: 1px solid #000 !important;
+            padding: 2px 3px !important;
+            white-space: pre-wrap !important;
+            word-break: break-word !important;
+        }
+        /* 印刷ヘッダー情報だけ表示 */
+        .print-only { display: block !important; }
+        /* ページ全体を1枚に収める */
+        * { overflow: visible !important; }
     }
+    /* 通常表示時は印刷専用要素を隠す */
+    .print-only { display: none; }
+    .print-weekly-table { display: none; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -1263,13 +1338,61 @@ if role == "教員":
     else:
         subject_options = ["（空欄）"] + ALL_SUBJECTS
         st.caption("※ 専科は、各コマで学級・教科を自由に選択できます。")
-        st.info("この週に指導する学級をカンマ区切りで入力してください。（例：3-1,3-2,4-1）")
-        classes_input = st.text_input("指導学級一覧", key="classes_input")
-        class_candidates = [c.strip() for c in classes_input.split(",") if c.strip()]
+
+        # ── 専科：指導学級 タブUI ──────────────────────────────
+        st.markdown("##### 📋 この週に指導する学級を選択してください")
+
+        # 全学年・学級候補を自動生成（1-1〜6-4）
+        ALL_CLASS_CANDIDATES = [
+            f"{g}-{c}" for g in range(1, 7) for c in range(1, 5)
+        ]
+        # 既存の入力値があれば引き継ぐ
+        prev_classes_raw = st.session_state.get("classes_input", "")
+        prev_selected = [c.strip() for c in prev_classes_raw.split(",") if c.strip()]
+
+        # 学年ごとにタブ分け
+        grade_tab_labels = [f"{g}年" for g in range(1, 7)]
+        grade_tabs = st.tabs(grade_tab_labels)
+
+        selected_classes_set = set(prev_selected)
+        for gi, gtab in enumerate(grade_tabs):
+            with gtab:
+                g_num = gi + 1
+                g_candidates = [f"{g_num}-{c}" for c in range(1, 5)]
+                g_cols = st.columns(len(g_candidates))
+                for ci, cand in enumerate(g_candidates):
+                    checked = g_cols[ci].checkbox(
+                        cand,
+                        value=(cand in selected_classes_set),
+                        key=f"class_chk_{cand}"
+                    )
+                    if checked:
+                        selected_classes_set.add(cand)
+                    else:
+                        selected_classes_set.discard(cand)
+
+        # 選択結果を class_candidates に反映
+        class_candidates = sorted(
+            [c for c in ALL_CLASS_CANDIDATES if c in selected_classes_set],
+            key=lambda x: (int(x.split("-")[0]), int(x.split("-")[1]))
+        )
+        # 手動追加（カンマ区切り）も引き続きサポート
+        extra_input = st.text_input(
+            "上記以外の学級を追加（カンマ区切り 例：たんぽぽ）",
+            key="classes_extra_input",
+            placeholder="例：たんぽぽ,つくし"
+        )
+        extra_classes = [c.strip() for c in extra_input.split(",") if c.strip()]
+        class_candidates = class_candidates + [c for c in extra_classes if c not in class_candidates]
+
+        # session_state の classes_input を更新（後続の自動保存等のために）
+        st.session_state["classes_input"] = ",".join(class_candidates)
+
         if class_candidates:
-            st.caption("この週に指導する学級：" + "、".join(class_candidates))
+            st.success("指導学級：" + "　".join(class_candidates))
         else:
-            st.caption("※ 学級が未入力の場合、学級欄は空欄のままとなります。")
+            st.caption("※ 学級が未選択の場合、学級欄は空欄のままとなります。")
+        # ────────────────────────────────────────────────────────
 
     st.markdown("---")
     st.subheader("⭐ 前週コピー")
@@ -1512,14 +1635,50 @@ if role == "教員":
 
     st.markdown("---")
     st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
-    if st.checkbox("この週案を印刷用に表示する（列幅が広い表示）", key="print_toggle"):
+    if st.checkbox("この週案を印刷用に表示する（A4縦1枚フィット）", key="print_toggle"):
         df_print = build_print_df(timetable)
         if df_print.empty:
             st.info("有効なコマがありません。")
         else:
-            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str} の週案（印刷用）**")
-            st.dataframe(df_print, use_container_width=True, height=520)
-            st.info("ブラウザの印刷機能（Ctrl+P）から PDF 保存・印刷を行ってください。")
+            header_html = (
+                f"<div class='print-header print-only'>"
+                f"<strong>東小松川小学校　週の指導計画</strong>　　"
+                f"{current_school_year}　{base_grade}　{class_name}　"
+                f"{teacher_display}（{teacher_key}）　対象週：{week_str}"
+                f"</div>"
+            )
+            # Build HTML table for print
+            col_w0 = "7%"
+            col_wd = f"{93 // len(DAYS)}%"
+            th_days = "".join(f"<th style='width:{col_wd}'>{d}</th>" for d in DAYS)
+            table_rows = ""
+            for period in df_print.index:
+                row_cells = ""
+                for day in DAYS:
+                    val = df_print.at[period, day]
+                    lines = str(val).split("\n") if val else []
+                    cell_html = ""
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith("[") and "]" in line:
+                            cell_html += f"<div class='print-cell-subject'>{line}</div>"
+                        else:
+                            cell_html += f"<div class='print-cell-content'>{line}</div>"
+                    row_cells += f"<td>{cell_html}</td>"
+                table_rows += f"<tr><th>{period}</th>{row_cells}</tr>"
+            table_html = (
+                f"<table class='print-weekly-table' style='display:table'>"
+                f"<thead><tr><th style='width:{col_w0}'></th>{th_days}</tr></thead>"
+                f"<tbody>{table_rows}</tbody>"
+                f"</table>"
+            )
+            st.markdown(header_html + table_html, unsafe_allow_html=True)
+            # Screen view
+            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str}**")
+            st.dataframe(df_print, use_container_width=True, height=480)
+            st.info("💡 ブラウザの印刷（Ctrl+P / ⌘+P）→「用紙サイズ：A4」「余白：なし or 最小」で1枚に収まります。")
 
 # =========================
 # 管理職画面
@@ -1618,6 +1777,93 @@ if role == "管理職":
             st.warning(m)
     else:
         st.success("不足 / 超過の大きい科目は検出されませんでした。")
+
+    # ══════════════════════════════════════════════════════
+    # 未提出一覧（教員×週 のマトリクス）
+    # ══════════════════════════════════════════════════════
+    st.markdown("---")
+    st.subheader("🔴 未提出一覧")
+    st.caption("週案を一度も提出していない教員×週の組み合わせを表示します（下書きのみ or 未登録）。")
+
+    # 対象週を選ぶ（提出済み週の一覧 + 手動指定）
+    all_weeks_in_db = sorted({r[7] for r in all_rows if r[7]}, reverse=True)
+    # 全ユーザーのうち role='教員' のみ取得
+    cur.execute("SELECT user_id, display_name FROM users WHERE role='教員' ORDER BY display_name")
+    all_teachers = cur.fetchall()  # [(user_id, display_name), ...]
+
+    if not all_teachers:
+        st.info("教員ユーザーがまだ登録されていません。")
+    elif not all_weeks_in_db:
+        st.info("週案の提出が1件もないため、未提出一覧は作成できません。")
+    else:
+        col_un1, col_un2 = st.columns([2, 2])
+        with col_un1:
+            unsubmit_week_filter = st.selectbox(
+                "対象週で絞り込む",
+                ["すべての週"] + all_weeks_in_db,
+                key="unsubmit_week_filter"
+            )
+        with col_un2:
+            unsubmit_show_draft = st.checkbox(
+                "下書きのみの教員も「未提出」として表示する",
+                value=True,
+                key="unsubmit_show_draft"
+            )
+
+        # 提出済み（提出 or 承認 or 差戻）の (user_id, week) セット
+        submitted_set = set()
+        draft_set = set()
+        for r in all_rows:
+            uid, week_r, status_r = r[2], r[7], r[9]
+            if status_r in ("提出", "承認", "差戻"):
+                submitted_set.add((uid, week_r))
+            elif status_r == "下書き":
+                draft_set.add((uid, week_r))
+
+        target_weeks = all_weeks_in_db if unsubmit_week_filter == "すべての週" else [unsubmit_week_filter]
+
+        unsubmit_rows = []
+        for uid, dname in all_teachers:
+            for wk in target_weeks:
+                if (uid, wk) in submitted_set:
+                    continue  # 提出済み → スキップ
+                if not unsubmit_show_draft and (uid, wk) in draft_set:
+                    continue  # 下書きを未提出に含めない場合はスキップ
+                reason = "下書きのみ" if (uid, wk) in draft_set else "未登録"
+                unsubmit_rows.append({
+                    "教員ID": uid,
+                    "氏名": dname or uid,
+                    "週": wk,
+                    "状況": reason,
+                })
+
+        if not unsubmit_rows:
+            st.success("✅ 対象週の全教員が提出済みです。")
+        else:
+            df_unsubmit = pd.DataFrame(unsubmit_rows)
+            st.warning(f"⚠️ 未提出が {len(df_unsubmit)} 件あります。")
+            # サマリー（教員ごとの未提出週数）
+            with st.expander("📊 教員別サマリー（未提出週数）", expanded=True):
+                summary = df_unsubmit.groupby(["氏名", "教員ID"]).size().reset_index(name="未提出週数")
+                summary = summary.sort_values("未提出週数", ascending=False)
+                st.dataframe(summary, use_container_width=True, height=220)
+            with st.expander("📋 未提出 明細一覧", expanded=False):
+                st.dataframe(
+                    df_unsubmit.sort_values(["週", "氏名"]),
+                    use_container_width=True,
+                    height=360
+                )
+            # CSV ダウンロード
+            unsubmit_csv = df_unsubmit.sort_values(["週", "氏名"]).to_csv(index=False).encode("utf-8-sig")
+            today_str = date.today().strftime("%Y%m%d")
+            st.download_button(
+                "⬇️ 未提出一覧をCSVでダウンロード",
+                unsubmit_csv,
+                f"{safe_year_str(view_year)}_未提出一覧_{today_str}.csv",
+                "text/csv",
+                key="unsubmit_csv_dl"
+            )
+    # ══════════════════════════════════════════════════════
 
     st.subheader("⭐ 年間時数グラフ")
     df_hours_graph = build_hours_progress_df(view_year)
