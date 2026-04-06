@@ -1734,6 +1734,7 @@ if role == "管理職":
     else:
         st.info(f"✅ {view_year} は初期化済みです。")
 
+    all_rows = fetch_all_weekly_plans_for_year(view_year)
     cur.execute("SELECT id, school_year, user_id, teacher_name, grade, class, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by FROM weekly_plans WHERE school_year=? ORDER BY id DESC", (view_year,))
     all_rows = cur.fetchall()
 
