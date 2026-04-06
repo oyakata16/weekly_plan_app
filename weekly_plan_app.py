@@ -1739,13 +1739,15 @@ if role == "管理職":
 
     st.markdown("---")
     st.header("⭐ ダッシュボード（管理職）")
+st.header("⭐ ダッシュボード（管理職）")
+
 if all_rows:
     df_plans = pd.DataFrame(
         all_rows,
         columns=[
-            "id","school_year","teacher","grade","class",
-            "teacher_type","week","plan_json","status",
-            "submitted_at","approved_at","approved_by"
+            "id", "school_year", "teacher", "grade", "class",
+            "teacher_type", "week", "plan_json", "status",
+            "submitted_at", "approved_at", "approved_by"
         ]
     )
 
@@ -1761,109 +1763,40 @@ if all_rows:
 
     with c1:
         st.metric("下書き", draft_count)
-
     with c2:
         st.metric("提出", submitted_count)
-
     with c3:
         st.metric("承認", approved_count)
-
     with c4:
         st.metric("差戻", rejected_count)
 
-cda1, cda2 = st.columns(2)
-
-with c1:
-    st.markdown(
-        f"""
-        <div style="
-            background:#f4f6f8;
-            border:1px solid #d0d7de;
-            border-radius:12px;
-            padding:16px;
-            text-align:center;
-        ">
-            <div style="font-size:14px; color:#555;">下書き</div>
-            <div style="font-size:32px; font-weight:700; color:#7f8c8d;">{draft_count}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with c2:
-    st.markdown(
-        f"""
-        <div style="
-            background:#fff8e1;
-            border:1px solid #f1c40f;
-            border-radius:12px;
-            padding:16px;
-            text-align:center;
-        ">
-            <div style="font-size:14px; color:#555;">提出</div>
-            <div style="font-size:32px; font-weight:700; color:#f39c12;">{submitted_count}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with c3:
-    st.markdown(
-        f"""
-        <div style="
-            background:#eafaf1;
-            border:1px solid #27ae60;
-            border-radius:12px;
-            padding:16px;
-            text-align:center;
-        ">
-            <div style="font-size:14px; color:#555;">承認</div>
-            <div style="font-size:32px; font-weight:700; color:#27ae60;">{approved_count}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
-with c4:
-    st.markdown(
-        f"""
-        <div style="
-            background:#fdecea;
-            border:1px solid #c0392b;
-            border-radius:12px;
-            padding:16px;
-            text-align:center;
-        ">
-            <div style="font-size:14px; color:#555;">差戻</div>
-            <div style="font-size:32px; font-weight:700; color:#c0392b;">{rejected_count}</div>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
     cda1, cda2 = st.columns(2)
-        with cda1:
-            st.subheader("提出状況（教員別）")
-            df_plans["教員表示"] = df_plans.apply(lambda r: teacher_label(r["user_id"], r["teacher_name"]), axis=1)
-            by_teacher = df_plans.groupby(["教員表示", "status"]).size().reset_index(name="count")
-            pivot = by_teacher.pivot_table(index="教員表示", columns="status", values="count", fill_value=0)
-            st.dataframe(pivot.reset_index(), use_container_width=True, height=240)
-        with cda2:
-            st.subheader("提出状況（学年別）")
-            by_grade = df_plans.groupby(["grade","status"]).size().reset_index(name="count")
-            pivot_g = by_grade.pivot_table(index="grade", columns="status", values="count", fill_value=0)
-            st.dataframe(pivot_g.reset_index(), use_container_width=True, height=240)
 
-        st.subheader("学校行事 自動集計")
-        df_ev = aggregate_events_from_plans(all_rows)
-        if df_ev.empty:
-            st.info("学校行事の入力がある週案がまだありません。")
-        else:
-            ev_sum = df_ev.groupby(["学年"])["学校行事(45分コマ)"].sum().reset_index()
-            st.dataframe(ev_sum, use_container_width=True, height=220)
-            with st.expander("明細（週×教員）", expanded=False):
-                st.dataframe(df_ev, use_container_width=True, height=320)
+    with cda1:
+        st.subheader("提出状況（教員別）")
+        by_teacher = df_plans.groupby(["teacher", "status"]).size().reset_index(name="count")
+        pivot = by_teacher.pivot_table(index="teacher", columns="status", values="count", fill_value=0)
+        st.dataframe(pivot.reset_index(), use_container_width=True, height=240)
+
+    with cda2:
+        st.subheader("提出状況（学年別）")
+        by_grade = df_plans.groupby(["grade", "status"]).size().reset_index(name="count")
+        pivot_g = by_grade.pivot_table(index="grade", columns="status", values="count", fill_value=0)
+        st.dataframe(pivot_g.reset_index(), use_container_width=True, height=240)
+
+    st.subheader("学校行事 自動集計")
+    df_ev = aggregate_events_from_plans(all_rows)
+    if df_ev.empty:
+        st.info("学校行事の入力がある週案がまだありません。")
     else:
-        st.info("この年度の週案がまだありません。")
+        ev_sum = df_ev.groupby(["学年"])["学校行事(45分コマ)"].sum().reset_index()
+        st.dataframe(ev_sum, use_container_width=True, height=220)
+
+        with st.expander("明細（週×教員）", expanded=False):
+            st.dataframe(df_ev, use_container_width=True, height=320)
+
+else:
+    st.info("この年度の週案がまだありません。")
 
     st.subheader("⭐ 時数不足警告（年度全体）")
     warn = hours_warning_messages(view_year)
