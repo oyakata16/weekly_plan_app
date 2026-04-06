@@ -1731,46 +1731,44 @@ if role == "管理職":
             init_year_hours_zero(view_year, initialized_by=auth_user_id)
             st.success(f"{view_year} を初期化しました。")
             st.rerun()
-else:
-    st.info(f"✅ {view_year} は初期化済みです。")
+    else:
+        st.info(f"✅ {view_year} は初期化済みです。")
 
-# ← ここからインデントなし（左端）
-all_rows = fetch_all_weekly_plans_for_year(view_year)
+    cur.execute("SELECT id, school_year, user_id, teacher_name, grade, class, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by FROM weekly_plans WHERE school_year=? ORDER BY id DESC", (view_year,))
+    all_rows = cur.fetchall()
 
-st.markdown("---")
-st.header("⭐ ダッシュボード（管理職）")
+    st.markdown("---")
+    st.header("⭐ ダッシュボード（管理職）")
+    if all_rows:
+        df_plans = pd.DataFrame(all_rows, columns=["id","school_year","user_id","teacher_name","grade","class","teacher_type","week","plan_json","status","submitted_at","approved_at","approved_by"])
+        st.subheader("提出状況（件数）")
+        counts = df_plans["status"].value_counts().to_dict()
+        st.write({k: int(v) for k, v in counts.items()})
 
-if all_rows:
-    df_plans = pd.DataFrame(
-        all_rows,
-        columns=[
-            "id","school_year","teacher","grade","class",
-            "teacher_type","week","plan_json","status",
-            "submitted_at","approved_at","approved_by"
-        ]
-    )
+        cda1, cda2 = st.columns(2)
+        with cda1:
+            st.subheader("提出状況（教員別）")
+            df_plans["教員表示"] = df_plans.apply(lambda r: teacher_label(r["user_id"], r["teacher_name"]), axis=1)
+            by_teacher = df_plans.groupby(["教員表示", "status"]).size().reset_index(name="count")
+            pivot = by_teacher.pivot_table(index="教員表示", columns="status", values="count", fill_value=0)
+            st.dataframe(pivot.reset_index(), use_container_width=True, height=240)
+        with cda2:
+            st.subheader("提出状況（学年別）")
+            by_grade = df_plans.groupby(["grade","status"]).size().reset_index(name="count")
+            pivot_g = by_grade.pivot_table(index="grade", columns="status", values="count", fill_value=0)
+            st.dataframe(pivot_g.reset_index(), use_container_width=True, height=240)
 
-    st.subheader("提出状況（件数）")
-    counts = df_plans["status"].value_counts().to_dict()
-
-    draft_count = int(counts.get("下書き", 0))
-    submitted_count = int(counts.get("提出", 0))
-    approved_count = int(counts.get("承認", 0))
-    rejected_count = int(counts.get("差戻", 0))
-
-    c1, c2, c3, c4 = st.columns(4)
-
-    with c1:
-        st.metric("下書き", draft_count)
-    with c2:
-        st.metric("提出", submitted_count)
-    with c3:
-        st.metric("承認", approved_count)
-    with c4:
-        st.metric("差戻", rejected_count)
-
-else:
-    st.info("この年度の週案がまだありません。")
+        st.subheader("学校行事 自動集計")
+        df_ev = aggregate_events_from_plans(all_rows)
+        if df_ev.empty:
+            st.info("学校行事の入力がある週案がまだありません。")
+        else:
+            ev_sum = df_ev.groupby(["学年"])["学校行事(45分コマ)"].sum().reset_index()
+            st.dataframe(ev_sum, use_container_width=True, height=220)
+            with st.expander("明細（週×教員）", expanded=False):
+                st.dataframe(df_ev, use_container_width=True, height=320)
+    else:
+        st.info("この年度の週案がまだありません。")
 
     st.subheader("⭐ 時数不足警告（年度全体）")
     warn = hours_warning_messages(view_year)
