@@ -1339,57 +1339,68 @@ if role == "教員":
         subject_options = ["（空欄）"] + ALL_SUBJECTS
         st.caption("※ 専科は、各コマで学級・教科を自由に選択できます。")
 
-        # ── 専科：指導学級 タブUI ──────────────────────────────
+        # ── 専科：指導学級 選択式タグUI ─────────────────────────
         st.markdown("##### 📋 この週に指導する学級を選択してください")
+        st.caption("候補から複数選択すると、選択済み学級がタグ表示されます。")
 
-        # 全学年・学級候補を自動生成（1-1〜6-4）
-        ALL_CLASS_CANDIDATES = [
-            f"{g}-{c}" for g in range(1, 7) for c in range(1, 5)
-        ]
-        # 既存の入力値があれば引き継ぐ
+        ALL_CLASS_CANDIDATES = [f"{g}-{c}" for g in range(1, 7) for c in range(1, 5)]
         prev_classes_raw = st.session_state.get("classes_input", "")
         prev_selected = [c.strip() for c in prev_classes_raw.split(",") if c.strip()]
+        default_selected = [c for c in prev_selected if c in ALL_CLASS_CANDIDATES]
 
-        # 学年ごとにタブ分け
-        grade_tab_labels = [f"{g}年" for g in range(1, 7)]
-        grade_tabs = st.tabs(grade_tab_labels)
+        col_pick1, col_pick2 = st.columns([3, 2])
+        with col_pick1:
+            selected_from_list = st.multiselect(
+                "指導学級一覧（複数選択）",
+                options=ALL_CLASS_CANDIDATES,
+                default=default_selected,
+                key="classes_multiselect",
+                placeholder="学級を選択してください"
+            )
+        with col_pick2:
+            quick_grade = st.selectbox(
+                "学年まとめ選択",
+                ["（選択しない）"] + [f"{g}年" for g in range(1, 7)],
+                key="classes_quick_grade"
+            )
+            q1, q2 = st.columns(2)
+            if q1.button("学年追加", key="classes_quick_add") and quick_grade != "（選択しない）":
+                g_num = int(quick_grade.replace("年", ""))
+                add_targets = [f"{g_num}-{c}" for c in range(1, 5)]
+                merged = list(dict.fromkeys(st.session_state.get("classes_multiselect", []) + add_targets))
+                st.session_state["classes_multiselect"] = merged
+                st.rerun()
+            if q2.button("学年解除", key="classes_quick_remove") and quick_grade != "（選択しない）":
+                g_num = int(quick_grade.replace("年", ""))
+                remove_targets = {f"{g_num}-{c}" for c in range(1, 5)}
+                remain = [x for x in st.session_state.get("classes_multiselect", []) if x not in remove_targets]
+                st.session_state["classes_multiselect"] = remain
+                st.rerun()
 
-        selected_classes_set = set(prev_selected)
-        for gi, gtab in enumerate(grade_tabs):
-            with gtab:
-                g_num = gi + 1
-                g_candidates = [f"{g_num}-{c}" for c in range(1, 5)]
-                g_cols = st.columns(len(g_candidates))
-                for ci, cand in enumerate(g_candidates):
-                    checked = g_cols[ci].checkbox(
-                        cand,
-                        value=(cand in selected_classes_set),
-                        key=f"class_chk_{cand}"
-                    )
-                    if checked:
-                        selected_classes_set.add(cand)
-                    else:
-                        selected_classes_set.discard(cand)
-
-        # 選択結果を class_candidates に反映
-        class_candidates = sorted(
-            [c for c in ALL_CLASS_CANDIDATES if c in selected_classes_set],
-            key=lambda x: (int(x.split("-")[0]), int(x.split("-")[1]))
-        )
-        # 手動追加（カンマ区切り）も引き続きサポート
         extra_input = st.text_input(
-            "上記以外の学級を追加（カンマ区切り 例：たんぽぽ）",
+            "候補外の学級を追加（カンマ区切り 例：たんぽぽ,つくし）",
             key="classes_extra_input",
             placeholder="例：たんぽぽ,つくし"
         )
         extra_classes = [c.strip() for c in extra_input.split(",") if c.strip()]
-        class_candidates = class_candidates + [c for c in extra_classes if c not in class_candidates]
 
-        # session_state の classes_input を更新（後続の自動保存等のために）
+        class_candidates = list(dict.fromkeys(selected_from_list + extra_classes))
+
+        def _class_sort_key(x: str):
+            m = re.match(r"^(\d+)-(\d+)$", str(x).strip())
+            if m:
+                return (0, int(m.group(1)), int(m.group(2)), str(x))
+            return (1, 999, 999, str(x))
+
+        class_candidates = sorted(class_candidates, key=_class_sort_key)
         st.session_state["classes_input"] = ",".join(class_candidates)
 
         if class_candidates:
-            st.success("指導学級：" + "　".join(class_candidates))
+            chips = "".join([
+                f"<span style='display:inline-block;background:#eef3ff;border:1px solid #9db7ff;border-radius:999px;padding:4px 10px;margin:2px 6px 2px 0;font-size:13px;'>{c}</span>"
+                for c in class_candidates
+            ])
+            st.markdown(f"<div>選択中：{chips}</div>", unsafe_allow_html=True)
         else:
             st.caption("※ 学級が未選択の場合、学級欄は空欄のままとなります。")
         # ────────────────────────────────────────────────────────
