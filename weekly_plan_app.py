@@ -1795,38 +1795,42 @@ if role == "管理職":
         st.success("不足 / 超過の大きい科目は検出されませんでした。")
 
     # ══════════════════════════════════════════════════════
-    # 未提出一覧（教員×週 のマトリクス）
+    # 未提出一覧（見栄え改善版）
     # ══════════════════════════════════════════════════════
     st.markdown("---")
     st.subheader("🔴 未提出一覧")
-    st.caption("週案を一度も提出していない教員×週の組み合わせを表示します（下書きのみ or 未登録）。")
+    st.caption("週案を一度も提出していない教員×週の組み合わせを、サマリーと一覧で見やすく表示します。")
 
-    # 対象週を選ぶ（提出済み週の一覧 + 手動指定）
     all_weeks_in_db = sorted({r[7] for r in all_rows if r[7]}, reverse=True)
-    # 全ユーザーのうち role='教員' のみ取得
     cur.execute("SELECT user_id, display_name FROM users WHERE role='教員' ORDER BY display_name")
-    all_teachers = cur.fetchall()  # [(user_id, display_name), ...]
+    all_teachers = cur.fetchall()
 
     if not all_teachers:
         st.info("教員ユーザーがまだ登録されていません。")
     elif not all_weeks_in_db:
         st.info("週案の提出が1件もないため、未提出一覧は作成できません。")
     else:
-        col_un1, col_un2 = st.columns([2, 2])
-        with col_un1:
+        filt1, filt2, filt3 = st.columns([2, 2, 2])
+        with filt1:
             unsubmit_week_filter = st.selectbox(
                 "対象週で絞り込む",
                 ["すべての週"] + all_weeks_in_db,
                 key="unsubmit_week_filter"
             )
-        with col_un2:
+        with filt2:
             unsubmit_show_draft = st.checkbox(
-                "下書きのみの教員も「未提出」として表示する",
+                "下書きのみも未提出に含める",
                 value=True,
                 key="unsubmit_show_draft"
             )
+        with filt3:
+            teacher_name_options = ["全教員"] + [dname or uid for uid, dname in all_teachers]
+            unsubmit_teacher_filter = st.selectbox(
+                "教員で絞り込む",
+                teacher_name_options,
+                key="unsubmit_teacher_filter"
+            )
 
-        # 提出済み（提出 or 承認 or 差戻）の (user_id, week) セット
         submitted_set = set()
         draft_set = set()
         for r in all_rows:
@@ -1840,45 +1844,100 @@ if role == "管理職":
 
         unsubmit_rows = []
         for uid, dname in all_teachers:
+            display_name = dname or uid
+            if unsubmit_teacher_filter != "全教員" and display_name != unsubmit_teacher_filter:
+                continue
             for wk in target_weeks:
                 if (uid, wk) in submitted_set:
-                    continue  # 提出済み → スキップ
+                    continue
                 if not unsubmit_show_draft and (uid, wk) in draft_set:
-                    continue  # 下書きを未提出に含めない場合はスキップ
+                    continue
                 reason = "下書きのみ" if (uid, wk) in draft_set else "未登録"
                 unsubmit_rows.append({
                     "教員ID": uid,
-                    "氏名": dname or uid,
+                    "氏名": display_name,
                     "週": wk,
                     "状況": reason,
+                    "表示": f"{display_name}（{uid}）"
                 })
 
         if not unsubmit_rows:
-            st.success("✅ 対象週の全教員が提出済みです。")
+            st.success("✅ 対象条件では未提出はありません。全教員提出済みです。")
         else:
             df_unsubmit = pd.DataFrame(unsubmit_rows)
-            st.warning(f"⚠️ 未提出が {len(df_unsubmit)} 件あります。")
-            # サマリー（教員ごとの未提出週数）
-            with st.expander("📊 教員別サマリー（未提出週数）", expanded=True):
-                summary = df_unsubmit.groupby(["氏名", "教員ID"]).size().reset_index(name="未提出週数")
-                summary = summary.sort_values("未提出週数", ascending=False)
-                st.dataframe(summary, use_container_width=True, height=220)
-            with st.expander("📋 未提出 明細一覧", expanded=False):
-                st.dataframe(
-                    df_unsubmit.sort_values(["週", "氏名"]),
-                    use_container_width=True,
-                    height=360
+
+            total_missing = len(df_unsubmit)
+            teacher_missing = df_unsubmit["教員ID"].nunique()
+            week_missing = df_unsubmit["週"].nunique()
+            draft_only_count = int((df_unsubmit["状況"] == "下書きのみ").sum())
+
+            s1, s2, s3, s4 = st.columns(4)
+            with s1:
+                st.metric("未提出件数", total_missing)
+            with s2:
+                st.metric("該当教員数", teacher_missing)
+            with s3:
+                st.metric("対象週数", week_missing)
+            with s4:
+                st.metric("下書きのみ", draft_only_count)
+
+            left, right = st.columns([1.15, 1.85])
+
+            with left:
+                st.markdown("#### 教員別サマリー")
+                summary = (
+                    df_unsubmit.groupby(["氏名", "教員ID", "状況"])
+                    .size()
+                    .reset_index(name="件数")
                 )
-            # CSV ダウンロード
-            unsubmit_csv = df_unsubmit.sort_values(["週", "氏名"]).to_csv(index=False).encode("utf-8-sig")
-            today_str = date.today().strftime("%Y%m%d")
-            st.download_button(
-                "⬇️ 未提出一覧をCSVでダウンロード",
-                unsubmit_csv,
-                f"{safe_year_str(view_year)}_未提出一覧_{today_str}.csv",
-                "text/csv",
-                key="unsubmit_csv_dl"
-            )
+                summary_pivot = (
+                    summary.pivot_table(
+                        index=["氏名", "教員ID"],
+                        columns="状況",
+                        values="件数",
+                        fill_value=0
+                    )
+                    .reset_index()
+                )
+                summary_pivot["合計"] = summary_pivot[[c for c in summary_pivot.columns if c in ["未登録", "下書きのみ"]]].sum(axis=1)
+                summary_pivot = summary_pivot.sort_values(["合計", "氏名"], ascending=[False, True])
+                st.dataframe(summary_pivot, use_container_width=True, height=260)
+
+            with right:
+                st.markdown("#### 週 × 教員 マトリクス")
+                matrix_src = df_unsubmit.copy()
+                matrix_src["表示記号"] = matrix_src["状況"].map({"未登録": "未", "下書きのみ": "下"}).fillna("-")
+                matrix = (
+                    matrix_src.pivot_table(
+                        index="表示",
+                        columns="週",
+                        values="表示記号",
+                        aggfunc="first",
+                        fill_value=""
+                    )
+                    .reset_index()
+                )
+                week_cols = [c for c in matrix.columns if c != "表示"]
+                ordered_cols = ["表示"] + sorted(week_cols, reverse=True)
+                st.dataframe(matrix[ordered_cols], use_container_width=True, height=260)
+
+            with st.expander("📋 未提出 明細一覧", expanded=False):
+                detail_df = df_unsubmit[["週", "氏名", "教員ID", "状況"]].sort_values(["週", "氏名"])
+                st.dataframe(detail_df, use_container_width=True, height=360)
+
+            legend_col1, legend_col2 = st.columns(2)
+            with legend_col1:
+                st.caption("凡例：未 = 未登録 / 下 = 下書きのみ")
+            with legend_col2:
+                unsubmit_csv = df_unsubmit[["週", "氏名", "教員ID", "状況"]].sort_values(["週", "氏名"]).to_csv(index=False).encode("utf-8-sig")
+                today_str = date.today().strftime("%Y%m%d")
+                st.download_button(
+                    "⬇️ 未提出一覧をCSVでダウンロード",
+                    unsubmit_csv,
+                    f"{safe_year_str(view_year)}_未提出一覧_{today_str}.csv",
+                    "text/csv",
+                    key="unsubmit_csv_dl"
+                )
     # ══════════════════════════════════════════════════════
 
     st.subheader("⭐ 年間時数グラフ")
