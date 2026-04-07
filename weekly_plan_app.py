@@ -73,26 +73,26 @@ st.markdown(
         padding: 6px 6px 2px 6px !important; margin: 2px 0 6px 0 !important;
         background: rgba(255,255,255,0.80);
     }
-.tt-rowlabel {
-    border: 1px solid #999 !important;
-    border-radius: 6px !important;
-    padding: 8px 6px !important;
-    margin: 2px 0 6px 0 !important;
-    background: #e0e0e0 !important;
-    font-weight: 700;
-    text-align: center;
-    color: #000000 !important;   /* ← これ追加が重要 */
-}
-.tt-rowlabel {
-    border: 1px solid #999 !important;
-    border-radius: 6px !important;
-    padding: 8px 6px !important;
-    margin: 2px 0 6px 0 !important;
-    background: #e0e0e0 !important;
-    font-weight: 700;
-    text-align: center;
-    color: #000000 !important;   /* ← これ追加が重要 */
-}
+    .tt-rowlabel {
+        border: 1px solid #999 !important;
+        border-radius: 6px !important;
+        padding: 8px 6px !important;
+        margin: 2px 0 6px 0 !important;
+        background: #e0e0e0 !important;
+        font-weight: 700;
+        text-align: center;
+        color: #000000 !important;
+    }
+    .tt-headcell {
+        border: 1px solid #999 !important;
+        border-radius: 6px !important;
+        padding: 8px 6px !important;
+        margin: 2px 0 6px 0 !important;
+        background: #d6d6d6 !important;
+        font-weight: 800;
+        text-align: center;
+        color: #000000 !important;
+    }
     .tt-section {
         font-size: 12px; font-weight: 800; padding: 2px 6px; border-radius: 999px;
         display: inline-block; margin: 2px 0 4px 0; border: 1px solid #777;
@@ -1743,7 +1743,23 @@ if role == "管理職":
         df_plans = pd.DataFrame(all_rows, columns=["id","school_year","user_id","teacher_name","grade","class","teacher_type","week","plan_json","status","submitted_at","approved_at","approved_by"])
         st.subheader("提出状況（件数）")
         counts = df_plans["status"].value_counts().to_dict()
-        st.write({k: int(v) for k, v in counts.items()})
+
+        draft_count = int(counts.get("下書き", 0))
+        submitted_count = int(counts.get("提出", 0))
+        approved_count = int(counts.get("承認", 0))
+        rejected_count = int(counts.get("差戻", 0))
+
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("下書き", draft_count)
+        with m2:
+            st.metric("提出", submitted_count)
+        with m3:
+            st.metric("承認", approved_count)
+        with m4:
+            st.metric("差戻", rejected_count)
+
+        st.caption("現在の年度に登録されている週案の状態別件数です。")
 
         cda1, cda2 = st.columns(2)
         with cda1:
