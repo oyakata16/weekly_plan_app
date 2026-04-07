@@ -107,6 +107,49 @@ st.markdown(
     div[data-testid="stVerticalBlockBorderWrapper"]{
         border: 1px solid #000 !important; border-radius: 0px !important; box-shadow: none !important;
     }
+
+    .status-card {
+        padding: 12px 14px;
+        border-radius: 10px;
+        margin-bottom: 8px;
+        font-weight: 700;
+        border-left: 6px solid transparent;
+    }
+    .status-missing { background-color: #ffe5e5; border-left-color: #ff4d4d; }
+    .status-draft { background-color: #fff7cc; border-left-color: #ffcc00; }
+    .status-done { background-color: #e6ffe6; border-left-color: #33cc33; }
+    .matrix-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }
+    .matrix-table th, .matrix-table td {
+        border: 1px solid #d0d7de;
+        padding: 6px 8px;
+        text-align: center;
+        vertical-align: middle;
+    }
+    .matrix-table th:first-child, .matrix-table td:first-child {
+        text-align: left;
+        white-space: nowrap;
+    }
+    .matrix-cell {
+        text-align: center;
+        font-weight: 700;
+        border-radius: 6px;
+        padding: 4px 6px;
+        display: inline-block;
+        min-width: 28px;
+    }
+    .miss { background-color:#ffcccc; color:#8b0000; }
+    .draft { background-color:#fff0b3; color:#8a6d00; }
+    .done { background-color:#ccffcc; color:#006400; }
+    .empty { background-color:#f4f4f4; color:#666666; }
+    .tag-chip {
+        display:inline-block; padding:4px 10px; margin:2px 4px 2px 0;
+        border-radius:999px; background:#eef4ff; border:1px solid #b8cdf5;
+        font-size:13px; font-weight:600;
+    }
     @media print {
         /* ======= 印刷レイアウト（A4縦1枚フィット） ======= */
         @page {
@@ -1339,68 +1382,60 @@ if role == "教員":
         subject_options = ["（空欄）"] + ALL_SUBJECTS
         st.caption("※ 専科は、各コマで学級・教科を自由に選択できます。")
 
-        # ── 専科：指導学級 選択式タグUI ─────────────────────────
+        # ── 専科：指導学級 選択式タグUI ──────────────────────────────
         st.markdown("##### 📋 この週に指導する学級を選択してください")
-        st.caption("候補から複数選択すると、選択済み学級がタグ表示されます。")
 
-        ALL_CLASS_CANDIDATES = [f"{g}-{c}" for g in range(1, 7) for c in range(1, 5)]
+        all_class_candidates = [f"{g}-{c}" for g in range(1, 7) for c in range(1, 5)]
         prev_classes_raw = st.session_state.get("classes_input", "")
         prev_selected = [c.strip() for c in prev_classes_raw.split(",") if c.strip()]
-        default_selected = [c for c in prev_selected if c in ALL_CLASS_CANDIDATES]
 
-        col_pick1, col_pick2 = st.columns([3, 2])
-        with col_pick1:
-            selected_from_list = st.multiselect(
-                "指導学級一覧（複数選択）",
-                options=ALL_CLASS_CANDIDATES,
-                default=default_selected,
-                key="classes_multiselect",
-                placeholder="学級を選択してください"
-            )
-        with col_pick2:
-            quick_grade = st.selectbox(
-                "学年まとめ選択",
-                ["（選択しない）"] + [f"{g}年" for g in range(1, 7)],
-                key="classes_quick_grade"
-            )
-            q1, q2 = st.columns(2)
-            if q1.button("学年追加", key="classes_quick_add") and quick_grade != "（選択しない）":
-                g_num = int(quick_grade.replace("年", ""))
-                add_targets = [f"{g_num}-{c}" for c in range(1, 5)]
-                merged = list(dict.fromkeys(st.session_state.get("classes_multiselect", []) + add_targets))
-                st.session_state["classes_multiselect"] = merged
-                st.rerun()
-            if q2.button("学年解除", key="classes_quick_remove") and quick_grade != "（選択しない）":
-                g_num = int(quick_grade.replace("年", ""))
-                remove_targets = {f"{g_num}-{c}" for c in range(1, 5)}
-                remain = [x for x in st.session_state.get("classes_multiselect", []) if x not in remove_targets]
-                st.session_state["classes_multiselect"] = remain
-                st.rerun()
+        quick_cols = st.columns(6)
+        selected_classes_set = set(prev_selected)
+        for g in range(1, 7):
+            with quick_cols[g-1]:
+                if st.button(f"{g}年を追加", key=f"add_grade_{g}"):
+                    for c in range(1, 5):
+                        selected_classes_set.add(f"{g}-{c}")
+                    st.session_state["classes_input"] = ",".join(sorted(selected_classes_set))
+                    st.rerun()
+                if st.button(f"{g}年解除", key=f"remove_grade_{g}"):
+                    for c in range(1, 5):
+                        selected_classes_set.discard(f"{g}-{c}")
+                    st.session_state["classes_input"] = ",".join(sorted(selected_classes_set))
+                    st.rerun()
+
+        selected_classes = st.multiselect(
+            "指導学級（複数選択）",
+            options=all_class_candidates,
+            default=sorted(selected_classes_set, key=lambda x: (int(x.split("-")[0]), int(x.split("-")[1]))),
+            key="special_class_multiselect",
+            help="チェック式で複数の学級を選択できます。"
+        )
 
         extra_input = st.text_input(
-            "候補外の学級を追加（カンマ区切り 例：たんぽぽ,つくし）",
+            "上記以外の学級を追加（カンマ区切り 例：たんぽぽ）",
             key="classes_extra_input",
             placeholder="例：たんぽぽ,つくし"
         )
         extra_classes = [c.strip() for c in extra_input.split(",") if c.strip()]
 
-        class_candidates = list(dict.fromkeys(selected_from_list + extra_classes))
+        class_candidates = list(selected_classes)
+        for c in extra_classes:
+            if c not in class_candidates:
+                class_candidates.append(c)
 
-        def _class_sort_key(x: str):
-            m = re.match(r"^(\d+)-(\d+)$", str(x).strip())
-            if m:
-                return (0, int(m.group(1)), int(m.group(2)), str(x))
-            return (1, 999, 999, str(x))
+        def class_sort_key(x):
+            if "-" in x and x.split("-")[0].isdigit() and x.split("-")[1].isdigit():
+                return (0, int(x.split("-")[0]), int(x.split("-")[1]), x)
+            return (1, 999, 999, x)
 
-        class_candidates = sorted(class_candidates, key=_class_sort_key)
+        class_candidates = sorted(class_candidates, key=class_sort_key)
         st.session_state["classes_input"] = ",".join(class_candidates)
 
         if class_candidates:
-            chips = "".join([
-                f"<span style='display:inline-block;background:#eef3ff;border:1px solid #9db7ff;border-radius:999px;padding:4px 10px;margin:2px 6px 2px 0;font-size:13px;'>{c}</span>"
-                for c in class_candidates
-            ])
-            st.markdown(f"<div>選択中：{chips}</div>", unsafe_allow_html=True)
+            st.markdown("###### 選択中の学級")
+            chips = "".join([f"<span class='tag-chip'>{c}</span>" for c in class_candidates])
+            st.markdown(chips, unsafe_allow_html=True)
         else:
             st.caption("※ 学級が未選択の場合、学級欄は空欄のままとなります。")
         # ────────────────────────────────────────────────────────
@@ -1806,11 +1841,11 @@ if role == "管理職":
         st.success("不足 / 超過の大きい科目は検出されませんでした。")
 
     # ══════════════════════════════════════════════════════
-    # 未提出一覧（見栄え改善版）
+    # 未提出一覧（色分け＋カード表示強化版）
     # ══════════════════════════════════════════════════════
     st.markdown("---")
     st.subheader("🔴 未提出一覧")
-    st.caption("週案を一度も提出していない教員×週の組み合わせを、サマリーと一覧で見やすく表示します。")
+    st.caption("週案を一度も提出していない教員×週の組み合わせを、色分けカードとマトリクスで表示します。")
 
     all_weeks_in_db = sorted({r[7] for r in all_rows if r[7]}, reverse=True)
     cur.execute("SELECT user_id, display_name FROM users WHERE role='教員' ORDER BY display_name")
@@ -1844,8 +1879,10 @@ if role == "管理職":
 
         submitted_set = set()
         draft_set = set()
+        known_set = set()
         for r in all_rows:
             uid, week_r, status_r = r[2], r[7], r[9]
+            known_set.add((uid, week_r))
             if status_r in ("提出", "承認", "差戻"):
                 submitted_set.add((uid, week_r))
             elif status_r == "下書き":
@@ -1854,28 +1891,28 @@ if role == "管理職":
         target_weeks = all_weeks_in_db if unsubmit_week_filter == "すべての週" else [unsubmit_week_filter]
 
         unsubmit_rows = []
+        matrix_rows = []
         for uid, dname in all_teachers:
             display_name = dname or uid
             if unsubmit_teacher_filter != "全教員" and display_name != unsubmit_teacher_filter:
                 continue
             for wk in target_weeks:
                 if (uid, wk) in submitted_set:
+                    matrix_rows.append({"表示": f"{display_name}（{uid}）", "週": wk, "状態": "提出済み", "記号": "済", "class": "done"})
                     continue
-                if not unsubmit_show_draft and (uid, wk) in draft_set:
+                if (uid, wk) in draft_set:
+                    matrix_rows.append({"表示": f"{display_name}（{uid}）", "週": wk, "状態": "下書きのみ", "記号": "下", "class": "draft"})
+                    if unsubmit_show_draft:
+                        unsubmit_rows.append({"教員ID": uid, "氏名": display_name, "週": wk, "状況": "下書きのみ", "表示": f"{display_name}（{uid}）"})
                     continue
-                reason = "下書きのみ" if (uid, wk) in draft_set else "未登録"
-                unsubmit_rows.append({
-                    "教員ID": uid,
-                    "氏名": display_name,
-                    "週": wk,
-                    "状況": reason,
-                    "表示": f"{display_name}（{uid}）"
-                })
+                matrix_rows.append({"表示": f"{display_name}（{uid}）", "週": wk, "状態": "未登録", "記号": "未", "class": "miss"})
+                unsubmit_rows.append({"教員ID": uid, "氏名": display_name, "週": wk, "状況": "未登録", "表示": f"{display_name}（{uid}）"})
 
         if not unsubmit_rows:
             st.success("✅ 対象条件では未提出はありません。全教員提出済みです。")
         else:
             df_unsubmit = pd.DataFrame(unsubmit_rows)
+            df_matrix = pd.DataFrame(matrix_rows)
 
             total_missing = len(df_unsubmit)
             teacher_missing = df_unsubmit["教員ID"].nunique()
@@ -1892,63 +1929,66 @@ if role == "管理職":
             with s4:
                 st.metric("下書きのみ", draft_only_count)
 
-            left, right = st.columns([1.15, 1.85])
+            left, right = st.columns([1.0, 2.0])
 
             with left:
-                st.markdown("#### 教員別サマリー")
-                summary = (
-                    df_unsubmit.groupby(["氏名", "教員ID", "状況"])
-                    .size()
-                    .reset_index(name="件数")
+                st.markdown("#### 教員カード表示")
+                teacher_summary = (
+                    df_unsubmit.groupby(["氏名", "教員ID", "状況"]).size().reset_index(name="件数")
                 )
-                summary_pivot = (
-                    summary.pivot_table(
-                        index=["氏名", "教員ID"],
-                        columns="状況",
-                        values="件数",
-                        fill_value=0
+                teacher_totals = (
+                    df_unsubmit.groupby(["氏名", "教員ID"]).size().reset_index(name="合計件数").sort_values(["合計件数", "氏名"], ascending=[False, True])
+                )
+                for _, row in teacher_totals.iterrows():
+                    person_rows = teacher_summary[(teacher_summary["氏名"] == row["氏名"]) & (teacher_summary["教員ID"] == row["教員ID"])]
+                    missing_cnt = int(person_rows.loc[person_rows["状況"] == "未登録", "件数"].sum())
+                    draft_cnt = int(person_rows.loc[person_rows["状況"] == "下書きのみ", "件数"].sum())
+                    css = "status-missing" if missing_cnt > 0 else "status-draft"
+                    detail = []
+                    if missing_cnt > 0:
+                        detail.append(f"未登録 {missing_cnt}件")
+                    if draft_cnt > 0:
+                        detail.append(f"下書きのみ {draft_cnt}件")
+                    st.markdown(
+                        f"<div class='status-card {css}'>{row['氏名']}（{row['教員ID']}）<br><span style='font-weight:500'>{' / '.join(detail)}</span></div>",
+                        unsafe_allow_html=True
                     )
-                    .reset_index()
-                )
-                summary_pivot["合計"] = summary_pivot[[c for c in summary_pivot.columns if c in ["未登録", "下書きのみ"]]].sum(axis=1)
-                summary_pivot = summary_pivot.sort_values(["合計", "氏名"], ascending=[False, True])
-                st.dataframe(summary_pivot, use_container_width=True, height=260)
 
             with right:
                 st.markdown("#### 週 × 教員 マトリクス")
-                matrix_src = df_unsubmit.copy()
-                matrix_src["表示記号"] = matrix_src["状況"].map({"未登録": "未", "下書きのみ": "下"}).fillna("-")
-                matrix = (
-                    matrix_src.pivot_table(
-                        index="表示",
-                        columns="週",
-                        values="表示記号",
-                        aggfunc="first",
-                        fill_value=""
-                    )
-                    .reset_index()
-                )
-                week_cols = [c for c in matrix.columns if c != "表示"]
-                ordered_cols = ["表示"] + sorted(week_cols, reverse=True)
-                st.dataframe(matrix[ordered_cols], use_container_width=True, height=260)
+                matrix_people = list(dict.fromkeys(df_matrix["表示"].tolist()))
+                matrix_weeks = target_weeks
+                html = ["<table class='matrix-table'><thead><tr><th>教員</th>"]
+                for wk in matrix_weeks:
+                    html.append(f"<th>{wk}</th>")
+                html.append("</tr></thead><tbody>")
+                for person in matrix_people:
+                    html.append(f"<tr><td>{person}</td>")
+                    for wk in matrix_weeks:
+                        hit = df_matrix[(df_matrix["表示"] == person) & (df_matrix["週"] == wk)]
+                        if hit.empty:
+                            html.append("<td><span class='matrix-cell empty'>-</span></td>")
+                        else:
+                            rec = hit.iloc[0]
+                            html.append(f"<td><span class='matrix-cell {rec['class']}' title='{rec['状態']}'>{rec['記号']}</span></td>")
+                    html.append("</tr>")
+                html.append("</tbody></table>")
+                st.markdown("".join(html), unsafe_allow_html=True)
+                st.caption("凡例：未=未登録 / 下=下書きのみ / 済=提出済み")
 
             with st.expander("📋 未提出 明細一覧", expanded=False):
                 detail_df = df_unsubmit[["週", "氏名", "教員ID", "状況"]].sort_values(["週", "氏名"])
-                st.dataframe(detail_df, use_container_width=True, height=360)
+                st.dataframe(detail_df, use_container_width=True, height=320)
 
-            legend_col1, legend_col2 = st.columns(2)
-            with legend_col1:
-                st.caption("凡例：未 = 未登録 / 下 = 下書きのみ")
-            with legend_col2:
-                unsubmit_csv = df_unsubmit[["週", "氏名", "教員ID", "状況"]].sort_values(["週", "氏名"]).to_csv(index=False).encode("utf-8-sig")
-                today_str = date.today().strftime("%Y%m%d")
-                st.download_button(
-                    "⬇️ 未提出一覧をCSVでダウンロード",
-                    unsubmit_csv,
-                    f"{safe_year_str(view_year)}_未提出一覧_{today_str}.csv",
-                    "text/csv",
-                    key="unsubmit_csv_dl"
-                )
+            unsubmit_csv = df_unsubmit[["週", "氏名", "教員ID", "状況"]].sort_values(["週", "氏名"]).to_csv(index=False).encode("utf-8-sig")
+            today_str = date.today().strftime("%Y%m%d")
+            st.download_button(
+                "⬇️ 未提出一覧をCSVでダウンロード",
+                unsubmit_csv,
+                f"{safe_year_str(view_year)}_未提出一覧_{today_str}.csv",
+                "text/csv",
+                key="unsubmit_csv_dl"
+            )
     # ══════════════════════════════════════════════════════
 
     st.subheader("⭐ 年間時数グラフ")
