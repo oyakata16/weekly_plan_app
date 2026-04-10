@@ -847,26 +847,63 @@ def build_print_df(timetable: dict) -> pd.DataFrame:
     return pd.DataFrame(rows, index=index, columns=DAYS) if rows else pd.DataFrame()
 
 
-def validate_timetable_for_submit(tt: dict):
+def validate_timetable_for_submit(tt: dict, teacher_type: str = "担任"):
     errors = []
+    tt = normalize_timetable(tt)
+    filled_count = 0
+
     for day in DAYS:
         for period in PERIODS:
             slot_minutes = PERIOD_MINUTES.get(day, {}).get(period, 0)
             if slot_minutes <= 0:
                 continue
-            cell = (tt or {}).get(day, {}).get(period)
-            if not cell:
-                continue
+
+            cell = (tt or {}).get(day, {}).get(period, empty_cell())
             event = cell.get("event") or {}
+            main = cell.get("main") or {}
             frac = max(0.0, min(1.0, float(event.get("fraction", 0.0) or 0.0)))
+            subj = (main.get("subject") or "").strip()
+            klass = (cell.get("class") or "").strip()
+            event_content = (event.get("content") or "").strip()
+            main_content = (main.get("content") or "").strip()
+
+            has_event = frac > 0.0
+            has_main = bool(subj and subj != "（空欄）")
+
+            if has_event or has_main or event_content or main_content or klass:
+                filled_count += 1
+
+            if teacher_type.startswith("専科"):
+                if has_event or has_main or event_content or main_content:
+                    if not klass:
+                        errors.append(f"{day} {period}: 専科のため学級の選択が必要です。")
+
             if 0.0 < frac < 1.0:
-                main = cell.get("main") or {}
-                subj = (main.get("subject") or "").strip()
                 e8 = fraction_to_8th(frac)
                 r8 = 8 - e8
-                if not subj or subj == "（空欄）":
+                if not has_main:
                     errors.append(f"{day} {period}: 学校行事が {e8}/8 のため、残り {r8}/8（{int(round(slot_minutes*(1-frac)))}分）の教科等が必要です。")
-    return errors
+
+            if frac == 0.0 and not has_main:
+                if event_content:
+                    errors.append(f"{day} {period}: 学校行事の内容だけ入力されています。配分を選択してください。")
+
+            if frac == 1.0 and not event_content:
+                errors.append(f"{day} {period}: 学校行事が 8/8 のため、内容を入力してください。")
+
+            if has_main and not main_content:
+                errors.append(f"{day} {period}: 教科等「{subj}」の内容を入力してください。")
+
+    if filled_count == 0:
+        errors.append("1週間の時間割が未入力です。少なくとも1コマ以上入力してください。")
+
+    seen = set()
+    unique_errors = []
+    for e in errors:
+        if e not in seen:
+            unique_errors.append(e)
+            seen.add(e)
+    return unique_errors
 
 
 def swap_cells_in_timetable(tt: dict, day_a: str, period_a: str, day_b: str, period_b: str):
@@ -1670,7 +1707,7 @@ if role == "教員":
             st.success("一時保存しました。下書き一覧 / 自動保存一覧から再開できます。")
     with col_b:
         if st.button("✅ この内容で管理職へ提出する", key="submit_btn"):
-            errors = validate_timetable_for_submit(timetable)
+            errors = validate_timetable_for_submit(timetable, teacher_type)
             if errors:
                 st.error("入力に不備があります。下記を修正してください：")
                 for e in errors:
