@@ -33,7 +33,7 @@ import streamlit as st
 # 基本設定
 # =========================
 APP_DIR = Path(__file__).resolve().parent
-DB_PATH = str(APP_DIR / "weekly_plans.db")
+DB_PATH = "weekly_plans.db"
 
 DEFAULT_MANAGER_SIGNUP_CODE = "school-admin-2026"
 MANAGER_SIGNUP_CODE = st.secrets.get("MANAGER_SIGNUP_CODE", DEFAULT_MANAGER_SIGNUP_CODE)
