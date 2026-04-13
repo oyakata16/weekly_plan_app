@@ -20,7 +20,6 @@
 import io
 import json
 import re
-import sqlite3
 import hashlib
 from datetime import date
 from pathlib import Path
@@ -33,7 +32,7 @@ import streamlit as st
 # 基本設定
 # =========================
 APP_DIR = Path(__file__).resolve().parent
-DB_PATH = str(APP_DIR / "weekly_plans.db")
+DB_PATH = "Supabase"
 
 DEFAULT_MANAGER_SIGNUP_CODE = "school-admin-2026"
 MANAGER_SIGNUP_CODE = st.secrets.get("MANAGER_SIGNUP_CODE", DEFAULT_MANAGER_SIGNUP_CODE)
@@ -240,8 +239,309 @@ COLUMN_WIDTHS = [0.7] + [1.6] * 6
 DAYS = ["月", "火", "水", "木", "金", "土"]
 PERIODS = ["1校時", "2校時", "3校時", "4校時", "5校時", "学校裁量", "6校時"]
 
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cur = conn.cursor()
+
+import requests
+from urllib.parse import urljoin, quote
+
+SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
+SUPABASE_SERVICE_ROLE_KEY = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", st.secrets.get("SUPABASE_KEY", ""))
+
+class SupabaseCompatConnection:
+    def commit(self):
+        return None
+
+class SupabaseCompatCursor:
+    def __init__(self, url: str, key: str):
+        self.url = url.rstrip("/") + "/"
+        self.key = key
+        self._results = []
+        self._single = None
+
+    def _headers(self, prefer: str | None = None):
+        h = {
+            "apikey": self.key,
+            "Authorization": f"Bearer {self.key}",
+            "Content-Type": "application/json",
+        }
+        if prefer:
+            h["Prefer"] = prefer
+        return h
+
+    def _table_url(self, table: str) -> str:
+        return urljoin(self.url, f"rest/v1/{table}")
+
+    def _request(self, method: str, path: str, *, params=None, json_body=None, headers=None):
+        if not self.url or not self.key:
+            raise RuntimeError("SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY を Streamlit secrets に設定してください。")
+        h = self._headers()
+        if headers:
+            h.update(headers)
+        resp = requests.request(method, urljoin(self.url, path), params=params, json=json_body, headers=h, timeout=30)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Supabase error {resp.status_code}: {resp.text[:500]}")
+        ct = resp.headers.get("content-type", "")
+        if "application/json" in ct:
+            return resp.json()
+        return resp.text
+
+    def _select(self, table: str, select: str = "*", filters=None, order=None, limit=None):
+        params = {"select": select}
+        if filters:
+            params.update(filters)
+        if order:
+            params["order"] = order
+        if limit is not None:
+            params["limit"] = str(limit)
+        return self._request("GET", f"rest/v1/{table}", params=params)
+
+    def _insert(self, table: str, rows, returning="representation"):
+        prefer = f"return={returning}"
+        return self._request("POST", f"rest/v1/{table}", json_body=rows, headers={"Prefer": prefer})
+
+    def _update(self, table: str, values: dict, filters=None, returning="representation"):
+        prefer = f"return={returning}"
+        return self._request("PATCH", f"rest/v1/{table}", params=filters or {}, json_body=values, headers={"Prefer": prefer})
+
+    def execute(self, query: str, params=()):
+        q = " ".join(query.strip().split())
+        self._results = []
+        self._single = None
+
+        # No-op DDL / migration SQL
+        if q.startswith("CREATE TABLE IF NOT EXISTS") or q.startswith("ALTER TABLE"):
+            return self
+        if q.startswith("UPDATE weekly_plans SET school_year=") or q.startswith("UPDATE hours_total SET school_year=") or q.startswith("UPDATE weekly_plans SET user_id=teacher") or q.startswith("UPDATE weekly_plans SET teacher_name=teacher") or q.startswith("UPDATE auto_save_sessions SET user_id=teacher") or q.startswith("UPDATE auto_save_sessions SET teacher_name=teacher"):
+            return self
+
+        # users
+        if q == "SELECT user_id, display_name, password_hash, role, created_at FROM users WHERE TRIM(user_id)=?":
+            uid = str(params[0]).strip()
+            rows = self._select("users", select="user_id,display_name,password_hash,role,created_at", filters={"user_id": f"eq.{uid}"}, limit=1)
+            self._single = tuple(rows[0].values()) if rows else None
+            return self
+        if q == "SELECT COUNT(*) FROM users":
+            rows = self._request("GET", "rest/v1/users", params={"select": "user_id"})
+            self._single = (len(rows),)
+            return self
+        if q.startswith("INSERT INTO users (user_id, display_name, password_hash, role, created_at) VALUES"):
+            user_id, display_name, password_hash, role = params
+            self._insert("users", [{"user_id": user_id, "display_name": display_name, "password_hash": password_hash, "role": role}], returning="minimal")
+            return self
+        if q == "UPDATE users SET password_hash=? WHERE user_id=?":
+            password_hash, uid = params
+            self._update("users", {"password_hash": password_hash}, {"user_id": f"eq.{uid}"}, returning="minimal")
+            return self
+        if q == "SELECT user_id, display_name FROM users WHERE role='教員' ORDER BY display_name":
+            rows = self._select("users", select="user_id,display_name", filters={"role": "eq.教員"}, order="display_name.asc")
+            self._results = [(r.get("user_id"), r.get("display_name")) for r in rows]
+            return self
+
+        # app_settings
+        if q == "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT)":
+            return self
+        if q == "SELECT value FROM app_settings WHERE key=?":
+            key = params[0]
+            rows = self._select("app_settings", select="value", filters={"key": f"eq.{key}"}, limit=1)
+            self._single = (rows[0]["value"],) if rows else None
+            return self
+        if q.startswith("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"):
+            key, value = params
+            existing = self._select("app_settings", select="key", filters={"key": f"eq.{key}"}, limit=1)
+            if existing:
+                self._update("app_settings", {"value": value}, {"key": f"eq.{key}"}, returning="minimal")
+            else:
+                self._insert("app_settings", [{"key": key, "value": value}], returning="minimal")
+            return self
+
+        # weekly_plans
+        if q.startswith("SELECT id FROM weekly_plans WHERE school_year=? AND TRIM(COALESCE(user_id,'')) = ? AND week=? AND status='下書き'"):
+            school_year, user_id, week = params
+            rows = self._select("weekly_plans", select="id", filters={"school_year": f"eq.{school_year}", "user_id": f"eq.{user_id}", "week": f"eq.{week}", "status": "eq.下書き"}, order="id.desc", limit=1)
+            self._single = (rows[0]["id"],) if rows else None
+            return self
+        if q.startswith("UPDATE weekly_plans SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, submitted_at=DATETIME('now') WHERE id=?"):
+            user_id, teacher_name, teacher, grade, klass, teacher_type, plan_json, row_id = params
+            self._update("weekly_plans", {"user_id": user_id, "teacher_name": teacher_name, "teacher": teacher, "grade": grade, "class": klass, "teacher_type": teacher_type, "plan_json": plan_json, "submitted_at": "now"}, {"id": f"eq.{row_id}"}, returning="minimal")
+            return self
+        if q.startswith("INSERT INTO weekly_plans (school_year, user_id, teacher_name, teacher, grade, class, teacher_type, week, plan_json, status, submitted_at) VALUES"):
+            school_year, user_id, teacher_name, teacher, grade, klass, teacher_type, week, plan_json = params
+            status = "提出" if "'提出'" in q else "下書き"
+            self._insert("weekly_plans", [{"school_year": school_year, "user_id": user_id, "teacher_name": teacher_name, "teacher": teacher, "grade": grade, "class": klass, "teacher_type": teacher_type, "week": week, "plan_json": plan_json, "status": status, "submitted_at": "now"}], returning="minimal")
+            return self
+        if q.startswith("SELECT id, week, grade, class, teacher_type, plan_json, submitted_at FROM weekly_plans WHERE school_year=? AND TRIM(COALESCE(user_id,'')) = ? AND status='下書き'"):
+            school_year, user_id = params
+            rows = self._select("weekly_plans", select="id,week,grade,class,teacher_type,plan_json,submitted_at", filters={"school_year": f"eq.{school_year}", "user_id": f"eq.{user_id}", "status": "eq.下書き"}, order="week.desc,id.desc")
+            self._results = [(r.get("id"), r.get("week"), r.get("grade"), r.get("class"), r.get("teacher_type"), r.get("plan_json"), r.get("submitted_at")) for r in rows]
+            return self
+        if q == "SELECT id, school_year, user_id, teacher_name, grade, class, teacher_type, week, plan_json, status FROM weekly_plans WHERE id=?":
+            row_id = params[0]
+            rows = self._select("weekly_plans", select="id,school_year,user_id,teacher_name,grade,class,teacher_type,week,plan_json,status", filters={"id": f"eq.{row_id}"}, limit=1)
+            self._single = tuple(rows[0].get(k) for k in ["id","school_year","user_id","teacher_name","grade","class","teacher_type","week","plan_json","status"]) if rows else None
+            return self
+        if q.startswith("SELECT plan_json, week, status FROM weekly_plans WHERE school_year=? AND TRIM(COALESCE(user_id,'')) = ? AND week < ?"):
+            school_year, user_id, week = params
+            rows = self._select("weekly_plans", select="plan_json,week,status", filters={"school_year": f"eq.{school_year}", "user_id": f"eq.{user_id}", "week": f"lt.{week}", "status": "in.(提出,承認,差戻,下書き)"}, order="week.desc,id.desc", limit=1)
+            self._single = (rows[0].get("plan_json"), rows[0].get("week"), rows[0].get("status")) if rows else None
+            return self
+        if q.startswith("UPDATE weekly_plans SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, status='提出', submitted_at=DATETIME('now') WHERE id=?"):
+            user_id, teacher_name, teacher, grade, klass, teacher_type, plan_json, row_id = params
+            self._update("weekly_plans", {"user_id": user_id, "teacher_name": teacher_name, "teacher": teacher, "grade": grade, "class": klass, "teacher_type": teacher_type, "plan_json": plan_json, "status": "提出", "submitted_at": "now"}, {"id": f"eq.{row_id}"}, returning="minimal")
+            return self
+        if q == "SELECT COUNT(DISTINCT week) FROM weekly_plans WHERE school_year=? AND grade=? AND status='承認'":
+            school_year, grade = params
+            rows = self._select("weekly_plans", select="week", filters={"school_year": f"eq.{school_year}", "grade": f"eq.{grade}", "status": "eq.承認"})
+            self._single = (len({r.get("week") for r in rows if r.get("week") is not None}),)
+            return self
+        if q == "SELECT DISTINCT school_year FROM weekly_plans":
+            rows = self._select("weekly_plans", select="school_year")
+            vals = []
+            seen = set()
+            for r in rows:
+                v = r.get("school_year")
+                if v not in seen:
+                    vals.append((v,))
+                    seen.add(v)
+            self._results = vals
+            return self
+        if q == "SELECT id, school_year, user_id, teacher_name, grade, class, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by FROM weekly_plans WHERE school_year=? ORDER BY id DESC":
+            school_year = params[0]
+            rows = self._select("weekly_plans", select="id,school_year,user_id,teacher_name,grade,class,teacher_type,week,plan_json,status,submitted_at,approved_at,approved_by", filters={"school_year": f"eq.{school_year}"}, order="id.desc")
+            cols = ["id","school_year","user_id","teacher_name","grade","class","teacher_type","week","plan_json","status","submitted_at","approved_at","approved_by"]
+            self._results = [tuple(r.get(c) for c in cols) for r in rows]
+            return self
+        if q == "UPDATE weekly_plans SET status='承認', approved_at=DATETIME('now'), approved_by=? WHERE id=?":
+            approved_by, row_id = params
+            self._update("weekly_plans", {"status": "承認", "approved_at": "now", "approved_by": approved_by}, {"id": f"eq.{row_id}"}, returning="minimal")
+            return self
+        if q == "UPDATE weekly_plans SET status='差戻' WHERE id=?":
+            row_id = params[0]
+            self._update("weekly_plans", {"status": "差戻"}, {"id": f"eq.{row_id}"}, returning="minimal")
+            return self
+
+        # hours_total
+        if q == "SELECT consumed FROM hours_total WHERE school_year=? AND grade=? AND subject=?":
+            school_year, grade, subject = params
+            rows = self._select("hours_total", select="consumed", filters={"school_year": f"eq.{school_year}", "grade": f"eq.{grade}", "subject": f"eq.{subject}"}, limit=1)
+            self._single = (rows[0].get("consumed"),) if rows else None
+            return self
+        if q == "UPDATE hours_total SET consumed=? WHERE school_year=? AND grade=? AND subject=?":
+            consumed, school_year, grade, subject = params
+            self._update("hours_total", {"consumed": consumed}, {"school_year": f"eq.{school_year}", "grade": f"eq.{grade}", "subject": f"eq.{subject}"}, returning="minimal")
+            return self
+        if q == "INSERT INTO hours_total (school_year, grade, subject, consumed) VALUES (?, ?, ?, ?)":
+            school_year, grade, subject, consumed = params
+            self._insert("hours_total", [{"school_year": school_year, "grade": grade, "subject": subject, "consumed": consumed}], returning="minimal")
+            return self
+        if q == "SELECT 1 FROM year_init WHERE school_year=? LIMIT 1":
+            school_year = params[0]
+            rows = self._select("year_init", select="school_year", filters={"school_year": f"eq.{school_year}"}, limit=1)
+            self._single = (1,) if rows else None
+            return self
+        if q == "INSERT OR IGNORE INTO hours_total (school_year, grade, subject, consumed) VALUES (?, ?, ?, 0.0)":
+            school_year, grade, subject = params
+            existing = self._select("hours_total", select="school_year", filters={"school_year": f"eq.{school_year}", "grade": f"eq.{grade}", "subject": f"eq.{subject}"}, limit=1)
+            if not existing:
+                self._insert("hours_total", [{"school_year": school_year, "grade": grade, "subject": subject, "consumed": 0.0}], returning="minimal")
+            return self
+        if q == "INSERT OR REPLACE INTO year_init (school_year, initialized_at, initialized_by) VALUES (?, DATETIME('now'), ?)":
+            school_year, initialized_by = params
+            existing = self._select("year_init", select="school_year", filters={"school_year": f"eq.{school_year}"}, limit=1)
+            if existing:
+                self._update("year_init", {"initialized_at": "now", "initialized_by": initialized_by}, {"school_year": f"eq.{school_year}"}, returning="minimal")
+            else:
+                self._insert("year_init", [{"school_year": school_year, "initialized_at": "now", "initialized_by": initialized_by}], returning="minimal")
+            return self
+        if q == "SELECT school_year, grade, subject, consumed FROM hours_total WHERE school_year=?":
+            school_year = params[0]
+            rows = self._select("hours_total", select="school_year,grade,subject,consumed", filters={"school_year": f"eq.{school_year}"})
+            self._results = [(r.get("school_year"), r.get("grade"), r.get("subject"), r.get("consumed")) for r in rows]
+            return self
+        if q == "SELECT DISTINCT school_year FROM hours_total":
+            rows = self._select("hours_total", select="school_year")
+            vals=[]; seen=set()
+            for r in rows:
+                v = r.get("school_year")
+                if v not in seen:
+                    vals.append((v,)); seen.add(v)
+            self._results = vals
+            return self
+
+        # auto_save_sessions
+        if q.startswith("SELECT id FROM auto_save_sessions WHERE school_year=? AND TRIM(COALESCE(user_id,'')) = ? AND week=? ORDER BY id DESC LIMIT 1"):
+            school_year, user_id, week = params
+            rows = self._select("auto_save_sessions", select="id", filters={"school_year": f"eq.{school_year}", "user_id": f"eq.{user_id}", "week": f"eq.{week}"}, order="id.desc", limit=1)
+            self._single = (rows[0].get("id"),) if rows else None
+            return self
+        if q.startswith("UPDATE auto_save_sessions SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, meta_json=?, saved_at=DATETIME('now') WHERE id=?"):
+            user_id, teacher_name, teacher, grade, klass, teacher_type, plan_json, meta_json, row_id = params
+            self._update("auto_save_sessions", {"user_id": user_id, "teacher_name": teacher_name, "teacher": teacher, "grade": grade, "class": klass, "teacher_type": teacher_type, "plan_json": plan_json, "meta_json": meta_json, "saved_at": "now"}, {"id": f"eq.{row_id}"}, returning="minimal")
+            return self
+        if q.startswith("INSERT INTO auto_save_sessions (school_year, user_id, teacher_name, teacher, grade, class, teacher_type, week, plan_json, meta_json, saved_at) VALUES"):
+            school_year, user_id, teacher_name, teacher, grade, klass, teacher_type, week, plan_json, meta_json = params
+            self._insert("auto_save_sessions", [{"school_year": school_year, "user_id": user_id, "teacher_name": teacher_name, "teacher": teacher, "grade": grade, "class": klass, "teacher_type": teacher_type, "week": week, "plan_json": plan_json, "meta_json": meta_json, "saved_at": "now"}], returning="minimal")
+            return self
+        if q.startswith("SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND TRIM(COALESCE(user_id,'')) = ? ORDER BY saved_at DESC, id DESC"):
+            school_year, user_id = params
+            rows = self._select("auto_save_sessions", select="id,week,grade,class,teacher_type,saved_at,plan_json,meta_json", filters={"school_year": f"eq.{school_year}", "user_id": f"eq.{user_id}"}, order="saved_at.desc,id.desc")
+            self._results = [(r.get("id"), r.get("week"), r.get("grade"), r.get("class"), r.get("teacher_type"), r.get("saved_at"), r.get("plan_json"), r.get("meta_json")) for r in rows]
+            return self
+        if q.startswith("SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE school_year=? AND TRIM(COALESCE(user_id,'')) = ? ORDER BY saved_at DESC, id DESC LIMIT 1"):
+            school_year, user_id = params
+            rows = self._select("auto_save_sessions", select="id,week,grade,class,teacher_type,saved_at,plan_json,meta_json", filters={"school_year": f"eq.{school_year}", "user_id": f"eq.{user_id}"}, order="saved_at.desc,id.desc", limit=1)
+            self._single = (rows[0].get("id"), rows[0].get("week"), rows[0].get("grade"), rows[0].get("class"), rows[0].get("teacher_type"), rows[0].get("saved_at"), rows[0].get("plan_json"), rows[0].get("meta_json")) if rows else None
+            return self
+        if q == "SELECT id, week, grade, class, teacher_type, saved_at, plan_json, meta_json FROM auto_save_sessions WHERE id=?":
+            row_id = params[0]
+            rows = self._select("auto_save_sessions", select="id,week,grade,class,teacher_type,saved_at,plan_json,meta_json", filters={"id": f"eq.{row_id}"}, limit=1)
+            self._single = (rows[0].get("id"), rows[0].get("week"), rows[0].get("grade"), rows[0].get("class"), rows[0].get("teacher_type"), rows[0].get("saved_at"), rows[0].get("plan_json"), rows[0].get("meta_json")) if rows else None
+            return self
+        if q.startswith("SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND TRIM(COALESCE(user_id,'')) = ? AND week=? ORDER BY id DESC LIMIT 1"):
+            school_year, user_id, week = params
+            rows = self._select("auto_save_sessions", select="saved_at", filters={"school_year": f"eq.{school_year}", "user_id": f"eq.{user_id}", "week": f"eq.{week}"}, order="id.desc", limit=1)
+            self._single = (rows[0].get("saved_at"),) if rows else None
+            return self
+
+        # inquiry logs
+        if q.startswith("INSERT INTO inquiry_logs (school_year, week, grade, class, teacher, teacher_name, theme, goals, activities, evidence, reflection, created_at) VALUES"):
+            school_year, week, grade, klass, teacher, teacher_name, theme, goals, activities, evidence, reflection = params
+            self._insert("inquiry_logs", [{"school_year": school_year, "week": week, "grade": grade, "class": klass, "teacher": teacher, "teacher_name": teacher_name, "theme": theme, "goals": goals, "activities": activities, "evidence": evidence, "reflection": reflection, "created_at": "now"}], returning="minimal")
+            return self
+        if q.startswith("SELECT id, school_year, week, grade, class, teacher, teacher_name, theme, goals, activities, evidence, reflection, created_at FROM inquiry_logs WHERE school_year=?"):
+            school_year = params[0]
+            filters = {"school_year": f"eq.{school_year}"}
+            idx=1
+            if " AND grade=?" in q:
+                filters["grade"] = f"eq.{params[idx]}"; idx+=1
+            if " AND class=?" in q:
+                filters["class"] = f"eq.{params[idx]}"; idx+=1
+            if " AND TRIM(COALESCE(teacher,''))=?" in q:
+                filters["teacher"] = f"eq.{params[idx]}"; idx+=1
+            rows = self._select("inquiry_logs", select="id,school_year,week,grade,class,teacher,teacher_name,theme,goals,activities,evidence,reflection,created_at", filters=filters, order="created_at.desc,id.desc")
+            cols = ["id","school_year","week","grade","class","teacher","teacher_name","theme","goals","activities","evidence","reflection","created_at"]
+            self._results = [tuple(r.get(c) for c in cols) for r in rows]
+            return self
+
+        # backup log
+        if q == "SELECT created_at FROM backup_log WHERE school_year=? ORDER BY id DESC LIMIT 1":
+            school_year = params[0]
+            rows = self._select("backup_log", select="created_at", filters={"school_year": f"eq.{school_year}"}, order="id.desc", limit=1)
+            self._single = (rows[0].get("created_at"),) if rows else None
+            return self
+        if q == "INSERT INTO backup_log (school_year, created_at, created_by, filename) VALUES (?, DATETIME('now'), ?, ?)":
+            school_year, created_by, filename = params
+            self._insert("backup_log", [{"school_year": school_year, "created_at": "now", "created_by": created_by, "filename": filename}], returning="minimal")
+            return self
+
+        raise NotImplementedError(f"Unsupported SQL in compatibility layer: {q}")
+
+    def fetchone(self):
+        return self._single
+
+    def fetchall(self):
+        return self._results
+
+conn = SupabaseCompatConnection()
+cur = SupabaseCompatCursor(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 # =========================
 # 認証
