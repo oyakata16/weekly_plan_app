@@ -747,14 +747,11 @@ def normalize_timetable(tt):
 
 
 def apply_timetable_to_widget_state(timetable: dict, teacher_type: str):
+    pass
+
+
 def restore_editor_state():
     pass
-    timetable: dict,
-    restored_teacher_type: str = None,
-    restored_grade: str = None,
-    restored_class: str = None,
-    restored_week: str = None,
-    show_message: str = "復元しました。"
 
     # ←ここから全部「半角スペース4つ」インデント
 
