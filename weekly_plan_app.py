@@ -812,7 +812,6 @@ def restore_editor_state(
     restored_class: str = None,
     restored_week: str = None,
     show_message: str = "復元しました。"
-):
     restored_tt = normalize_timetable(timetable)
 
     # 勤務形態
