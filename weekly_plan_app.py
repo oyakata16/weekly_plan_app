@@ -747,7 +747,7 @@ def normalize_timetable(tt):
 
 
 def apply_timetable_to_widget_state(timetable: dict, teacher_type: str):
-def restore_editor_state(
+def restore_editor_state():
     pass
     timetable: dict,
     restored_teacher_type: str = None,
