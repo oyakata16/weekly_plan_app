@@ -1288,6 +1288,72 @@ if role == "教員":
                     pass
 
                 apply_timetable_to_widget_state(restored_tt, restored_teacher_type)
+                def restore_editor_state(
+    timetable: dict,
+    restored_teacher_type: str = None,
+    restored_grade: str = None,
+    restored_class: str = None,
+    restored_week: str = None,
+    show_message: str = "復元しました。"
+):
+    """
+    復元系処理を一元化する。
+    - restore_plan
+    - 勤務形態
+    - 基準学年
+    - 学級
+    - 週
+    - 各コマの widget key
+    をまとめて反映する
+    """
+    restored_tt = normalize_timetable(timetable)
+
+    # 勤務形態
+    if restored_teacher_type in ["担任", "専科（音楽・家庭科など）"]:
+        st.session_state["teacher_type"] = restored_teacher_type
+        st.session_state["teacher_type_radio"] = restored_teacher_type
+    else:
+        restored_teacher_type = st.session_state.get("teacher_type", "担任")
+        st.session_state["teacher_type_radio"] = restored_teacher_type
+
+    # 学年
+    if restored_grade in STANDARD_HOURS:
+        st.session_state["base_grade"] = restored_grade
+        st.session_state["base_grade_select"] = restored_grade
+
+    # 学級
+    if restored_class is not None:
+        st.session_state["class_name"] = restored_class
+        st.session_state["class_name_input"] = restored_class
+
+    # 週
+    if restored_week:
+        try:
+            restored_date = date.fromisoformat(str(restored_week))
+            st.session_state["week_date"] = restored_date
+            st.session_state["week_date_input"] = restored_date
+        except Exception:
+            pass
+
+    # 本体
+    st.session_state["restore_plan"] = {"timetable": restored_tt}
+
+    # 専科用の候補表示にも反映
+    if restored_teacher_type.startswith("専科"):
+        class_set = set()
+        for day in DAYS:
+            for period in PERIODS:
+                cell = restored_tt.get(day, {}).get(period, {}) or {}
+                klass = (cell.get("class") or "").strip()
+                if klass:
+                    class_set.add(klass)
+        if class_set:
+            st.session_state["classes_input"] = ",".join(sorted(class_set))
+
+    apply_timetable_to_widget_state(restored_tt, restored_teacher_type)
+    st.session_state["restore_notice"] = True
+    st.success(show_message)
+    st.rerun()
                 st.session_state["restore_notice"] = True
                 st.success("下書きを復元しました。")
                 st.rerun()
