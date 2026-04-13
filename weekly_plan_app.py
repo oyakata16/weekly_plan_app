@@ -755,7 +755,7 @@ def restore_editor_state():
     restored_class: str = None,
     restored_week: str = None,
     show_message: str = "復元しました。"
-):
+
     # ←ここから全部「半角スペース4つ」インデント
 
     restored_tt = normalize_timetable(timetable)
