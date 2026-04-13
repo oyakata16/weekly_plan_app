@@ -747,7 +747,65 @@ def normalize_timetable(tt):
 
 
 def apply_timetable_to_widget_state(timetable: dict, teacher_type: str):
-    def restore_editor_state(
+def restore_editor_state(
+    timetable: dict,
+    restored_teacher_type: str = None,
+    restored_grade: str = None,
+    restored_class: str = None,
+    restored_week: str = None,
+    show_message: str = "復元しました。"
+):
+    # ←ここから全部「半角スペース4つ」インデント
+
+    restored_tt = normalize_timetable(timetable)
+
+    # 勤務形態
+    if restored_teacher_type in ["担任", "専科（音楽・家庭科など）"]:
+        final_teacher_type = restored_teacher_type
+    else:
+        final_teacher_type = st.session_state.get("teacher_type", "担任")
+
+    st.session_state["teacher_type"] = final_teacher_type
+    st.session_state["teacher_type_radio"] = final_teacher_type
+
+    # 基準学年
+    if restored_grade in STANDARD_HOURS:
+        st.session_state["base_grade"] = restored_grade
+        st.session_state["base_grade_select"] = restored_grade
+
+    # 学級
+    if restored_class is not None:
+        st.session_state["class_name"] = restored_class
+        st.session_state["class_name_input"] = restored_class
+
+    # 週
+    if restored_week:
+        try:
+            restored_date = date.fromisoformat(str(restored_week))
+            st.session_state["week_date"] = restored_date
+            st.session_state["week_date_input"] = restored_date
+        except Exception:
+            pass
+
+    # 本体
+    st.session_state["restore_plan"] = {"timetable": restored_tt}
+
+    # 専科の学級候補
+    if final_teacher_type.startswith("専科"):
+        class_set = set()
+        for day in DAYS:
+            for period in PERIODS:
+                cell = restored_tt.get(day, {}).get(period, {}) or {}
+                klass = (cell.get("class") or "").strip()
+                if klass:
+                    class_set.add(klass)
+        st.session_state["classes_input"] = ",".join(sorted(class_set)) if class_set else ""
+
+    apply_timetable_to_widget_state(restored_tt, final_teacher_type)
+
+    st.session_state["restore_notice"] = True
+    st.success(show_message)
+    st.rerun()
     timetable: dict,
     restored_teacher_type: str = None,
     restored_grade: str = None,
