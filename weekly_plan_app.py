@@ -747,6 +747,62 @@ def normalize_timetable(tt):
 
 
 def apply_timetable_to_widget_state(timetable: dict, teacher_type: str):
+    def restore_editor_state(
+    timetable: dict,
+    restored_teacher_type: str = None,
+    restored_grade: str = None,
+    restored_class: str = None,
+    restored_week: str = None,
+    show_message: str = "復元しました。"
+):
+    restored_tt = normalize_timetable(timetable)
+
+    # 勤務形態
+    if restored_teacher_type in ["担任", "専科（音楽・家庭科など）"]:
+        final_teacher_type = restored_teacher_type
+    else:
+        final_teacher_type = st.session_state.get("teacher_type", "担任")
+
+    st.session_state["teacher_type"] = final_teacher_type
+    st.session_state["teacher_type_radio"] = final_teacher_type
+
+    # 基準学年
+    if restored_grade in STANDARD_HOURS:
+        st.session_state["base_grade"] = restored_grade
+        st.session_state["base_grade_select"] = restored_grade
+
+    # 学級
+    if restored_class is not None:
+        st.session_state["class_name"] = restored_class
+        st.session_state["class_name_input"] = restored_class
+
+    # 週
+    if restored_week:
+        try:
+            restored_date = date.fromisoformat(str(restored_week))
+            st.session_state["week_date"] = restored_date
+            st.session_state["week_date_input"] = restored_date
+        except Exception:
+            pass
+
+    # 時間割本体
+    st.session_state["restore_plan"] = {"timetable": restored_tt}
+
+    # 専科の候補学級も復元
+    if final_teacher_type.startswith("専科"):
+        class_set = set()
+        for day in DAYS:
+            for period in PERIODS:
+                cell = restored_tt.get(day, {}).get(period, {}) or {}
+                klass = (cell.get("class") or "").strip()
+                if klass:
+                    class_set.add(klass)
+        st.session_state["classes_input"] = ",".join(sorted(class_set)) if class_set else ""
+
+    apply_timetable_to_widget_state(restored_tt, final_teacher_type)
+    st.session_state["restore_notice"] = True
+    st.success(show_message)
+    st.rerun()
     tt = normalize_timetable(timetable)
     for day in DAYS:
         for period in PERIODS:
@@ -1263,7 +1319,23 @@ if role == "教員":
             options.append(label)
             id_map[label] = wid
         sel = st.selectbox("自分の下書きを選択して復元", ["（選択しない）"] + options, key="draft_pick")
-        if sel != "（選択しない）" and st.button("📥 この下書きを復元する", key="draft_restore_btn"):
+if sel != "（選択しない）" and st.button("📥 この下書きを復元する", key="draft_restore_btn"):
+    row = load_plan_by_id(id_map[sel])
+    if row:
+        _id, _sy, _uid, _tname, _g, _c, _tt, _wk, _pj, _stt = row
+        try:
+            plan = json.loads(_pj) if _pj else {}
+        except Exception:
+            plan = {}
+
+        restore_editor_state(
+            timetable=plan.get("timetable", {}),
+            restored_teacher_type=_tt,
+            restored_grade=_g,
+            restored_class=_c or "",
+            restored_week=_wk,
+            show_message="下書きを復元しました。"
+        )
             row = load_plan_by_id(id_map[sel])
             if row:
                 _id, _sy, _uid, _tname, _g, _c, _tt, _wk, _pj, _stt = row
@@ -1301,7 +1373,24 @@ if role == "教員":
 
     col_as1, col_as2 = st.columns([2, 3])
     with col_as1:
-        if st.button("⏯ 前回の続きから再開する", key="resume_latest_btn"):
+if st.button("⏯ 前回の続きから再開する", key="resume_latest_btn"):
+    if latest_auto:
+        _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = latest_auto
+        try:
+            plan = json.loads(_plan_json) if _plan_json else {}
+        except Exception:
+            plan = {}
+
+        restore_editor_state(
+            timetable=plan.get("timetable", {}),
+            restored_teacher_type=_tt,
+            restored_grade=_g,
+            restored_class=_c or "",
+            restored_week=_wk,
+            show_message="前回の自動保存から再開しました。"
+        )
+    else:
+        st.info("再開できる自動保存データがありません。")
             if latest_auto:
                 _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = latest_auto
                 try:
@@ -1345,7 +1434,23 @@ if role == "教員":
             options.append(label)
             id_map[label] = sid
         sel_auto = st.selectbox("自動保存データ一覧から復元", ["（選択しない）"] + options, key="autosave_pick")
-        if sel_auto != "（選択しない）" and st.button("📂 この自動保存を復元", key="autosave_restore_btn"):
+  if sel_auto != "（選択しない）" and st.button("📂 この自動保存を復元", key="autosave_restore_btn"):
+    row = load_autosave_by_id(id_map[sel_auto])
+    if row:
+        _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = row
+        try:
+            plan = json.loads(_plan_json) if _plan_json else {}
+        except Exception:
+            plan = {}
+
+        restore_editor_state(
+            timetable=plan.get("timetable", {}),
+            restored_teacher_type=_tt,
+            restored_grade=_g,
+            restored_class=_c or "",
+            restored_week=_wk,
+            show_message="自動保存データを復元しました。"
+        )
             row = load_autosave_by_id(id_map[sel_auto])
             if row:
                 _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = row
@@ -1479,7 +1584,25 @@ if role == "教員":
 
     st.markdown("---")
     st.subheader("⭐ 前週コピー")
-    if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
+if st.button("⬅ 前週の週案をコピーする", key="copy_prev_week"):
+    row = fetch_latest_plan_before_week(current_school_year, teacher_key, week_str)
+    if not row:
+        st.warning("前週データが見つかりませんでした。")
+    else:
+        plan_json, prev_week, prev_status = row
+        try:
+            prev_plan = json.loads(plan_json) if plan_json else {}
+        except Exception:
+            prev_plan = {}
+
+        restore_editor_state(
+            timetable=prev_plan.get("timetable", {}),
+            restored_teacher_type=teacher_type,
+            restored_grade=base_grade,
+            restored_class=class_name,
+            restored_week=week_str,
+            show_message=f"前週（{prev_week}）をコピーしました。"
+        )
         row = fetch_latest_plan_before_week(current_school_year, teacher_key, week_str)
         if not row:
             st.warning("前週データが見つかりませんでした。")
