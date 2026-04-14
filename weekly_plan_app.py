@@ -1956,7 +1956,7 @@ subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
 st.markdown("---")
 st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
 for s in get_subjects_for_grade(base_grade):
-st.write(f"- {s}: {int(round(subject_minutes_this_grade.get(s, 0)))} 分")
+    st.write(f"- {s}: {int(round(subject_minutes_this_grade.get(s, 0)))} 分")
 
 st.markdown("---")
 st.subheader("⭐ 時数不足警告（年度全体）")
