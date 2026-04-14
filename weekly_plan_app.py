@@ -1948,10 +1948,20 @@ if role == "教員":
                     timetable[day][period] = {"class": klass, "event": {"fraction": event_frac, "content": event_content}, "main": {"subject": main_subject, "content": main_content}}
                     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.session_state["restore_plan"] = {"timetable": timetable}
+st.session_state["restore_plan"] = {"timetable": timetable}
 
-    try:
-        upsert_autosave(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
+try:
+    if has_meaningful_timetable_data(timetable):
+        upsert_autosave(
+            current_school_year,
+            teacher_key,
+            teacher_display,
+            base_grade,
+            class_name,
+            teacher_type,
+            week_str,
+            {"timetable": timetable}
+        )
         cur.execute(
             f"SELECT saved_at FROM auto_save_sessions WHERE school_year=? AND {user_where_clause('user_id')} AND week=? ORDER BY id DESC LIMIT 1",
             (current_school_year, teacher_key, week_str),
@@ -1959,9 +1969,10 @@ if role == "教員":
         row = cur.fetchone()
         if row:
             st.caption(f"自動保存済み: {row[0]}")
-    except Exception as e:
-        st.warning(f"自動保存で問題が発生しました: {e}")
-
+    else:
+        st.caption("入力後に自動保存されます。")
+except Exception as e:
+    st.warning(f"自動保存で問題が発生しました: {e}")
     week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
     subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
 
