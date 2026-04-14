@@ -1956,84 +1956,84 @@ subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
 st.markdown("---")
 st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
 for s in get_subjects_for_grade(base_grade):
-    st.write(f"- {s}: {int(round(subject_minutes_this_grade.get(s, 0)))} 分")
+st.write(f"- {s}: {int(round(subject_minutes_this_grade.get(s, 0)))} 分")
 
 st.markdown("---")
 st.subheader("⭐ 時数不足警告（年度全体）")
 warn_msgs = hours_warning_messages(current_school_year)
 if warn_msgs:
-    st.warning("不足 / 超過が検出されています（年間累積は『承認』で反映されます）。")
-    for m in warn_msgs[:20]:
-        st.write(f"- {m}")
-    if len(warn_msgs) > 20:
-        st.caption(f"…他 {len(warn_msgs)-20} 件")
+st.warning("不足 / 超過が検出されています（年間累積は『承認』で反映されます）。")
+for m in warn_msgs[:20]:
+st.write(f"- {m}")
+if len(warn_msgs) > 20:
+st.caption(f"…他 {len(warn_msgs)-20} 件")
 else:
-    st.success("不足 / 超過の大きい科目は検出されませんでした。")
+st.success("不足 / 超過の大きい科目は検出されませんでした。")
 
-    st.markdown("---")
-    st.subheader("💾 自分の週案を保存（CSV）")
-    slot_rows = []
-    for day in DAYS:
-        for period in PERIODS:
-            mins = PERIOD_MINUTES.get(day, {}).get(period, 0)
-            if mins <= 0:
-                continue
-            cell = (timetable or {}).get(day, {}).get(period, {}) or {}
-            segs = cell_to_segments(cell, mins)
-            if not segs:
-                slot_rows.append({"年度": current_school_year, "教員ID": teacher_key, "教員名": teacher_display, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(mins)), "学級": cell.get("class", ""), "教科等": "", "内容": ""})
-            else:
-                for seg in segs:
-                    slot_rows.append({"年度": current_school_year, "教員ID": teacher_key, "教員名": teacher_display, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(seg.get("minutes", 0))), "学級": seg.get("class", ""), "教科等": seg.get("subject", ""), "内容": seg.get("content", "")})
-    df_my = pd.DataFrame(slot_rows)
-    my_csv = df_my.to_csv(index=False).encode("utf-8-sig")
-    today_str = date.today().strftime("%Y%m%d")
-    my_name = f"{teacher_key}_{base_grade}_{week_str}_{today_str}_my_weekly_plan.csv".replace("/", "_")
-    st.download_button("⬇️ この週案をCSVで保存", my_csv, my_name, "text/csv")
+st.markdown("---")
+st.subheader("💾 自分の週案を保存（CSV）")
+slot_rows = []
+for day in DAYS:
+for period in PERIODS:
+mins = PERIOD_MINUTES.get(day, {}).get(period, 0)
+if mins <= 0:
+continue
+cell = (timetable or {}).get(day, {}).get(period, {}) or {}
+segs = cell_to_segments(cell, mins)
+if not segs:
+slot_rows.append({"年度": current_school_year, "教員ID": teacher_key, "教員名": teacher_display, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(mins)), "学級": cell.get("class", ""), "教科等": "", "内容": ""})
+else:
+for seg in segs:
+slot_rows.append({"年度": current_school_year, "教員ID": teacher_key, "教員名": teacher_display, "基準学年": base_grade, "担任学級": class_name, "勤務形態": teacher_type, "週": week_str, "曜日": day, "校時": period, "分": int(round(seg.get("minutes", 0))), "学級": seg.get("class", ""), "教科等": seg.get("subject", ""), "内容": seg.get("content", "")})
+df_my = pd.DataFrame(slot_rows)
+my_csv = df_my.to_csv(index=False).encode("utf-8-sig")
+today_str = date.today().strftime("%Y%m%d")
+my_name = f"{teacher_key}_{base_grade}_{week_str}_{today_str}_my_weekly_plan.csv".replace("/", "_")
+st.download_button("⬇️ この週案をCSVで保存", my_csv, my_name, "text/csv")
 
-    st.markdown("---")
-    st.subheader("⭐ 探究活動ログ（総合 / 学校裁量（探究）など）")
-    with st.expander("➕ 探究ログを追加", expanded=False):
-        theme = st.text_input("テーマ", key="inq_theme")
-        goals = st.text_area("ねらい（育てたい力）", key="inq_goals", height=80)
-        activities = st.text_area("活動（学習の流れ）", key="inq_activities", height=100)
-        evidence = st.text_area("証拠（成果物 / 写真 / 発表 / ルーブリック等）", key="inq_evidence", height=80)
-        reflection = st.text_area("振り返り（児童 / 教師）", key="inq_reflection", height=100)
-        if st.button("保存する", key="inq_save_btn"):
-            add_inquiry_log(current_school_year, week_str, base_grade, class_name, teacher_key, teacher_display, theme, goals, activities, evidence, reflection)
-            st.success("探究ログを保存しました。")
+st.markdown("---")
+st.subheader("⭐ 探究活動ログ（総合 / 学校裁量（探究）など）")
+with st.expander("➕ 探究ログを追加", expanded=False):
+theme = st.text_input("テーマ", key="inq_theme")
+goals = st.text_area("ねらい（育てたい力）", key="inq_goals", height=80)
+activities = st.text_area("活動（学習の流れ）", key="inq_activities", height=100)
+evidence = st.text_area("証拠（成果物 / 写真 / 発表 / ルーブリック等）", key="inq_evidence", height=80)
+reflection = st.text_area("振り返り（児童 / 教師）", key="inq_reflection", height=100)
+if st.button("保存する", key="inq_save_btn"):
+add_inquiry_log(current_school_year, week_str, base_grade, class_name, teacher_key, teacher_display, theme, goals, activities, evidence, reflection)
+st.success("探究ログを保存しました。")
 
-    with st.expander("📚 自分 / 学年の探究ログを確認", expanded=False):
-        gsel = st.selectbox("学年", ["すべて"] + list(STANDARD_HOURS.keys()), key="inq_grade_filter")
-        csel = st.text_input("学級（空欄で全学級）", key="inq_class_filter")
-        tsel = st.text_input("教員ID（空欄で全教員）", value=teacher_key, key="inq_teacher_filter")
-        logs = fetch_inquiry_logs(current_school_year, grade=gsel, class_name=csel, teacher=tsel)
-        if not logs:
-            st.info("探究ログはまだありません。")
-        else:
-            df_logs = pd.DataFrame(logs, columns=["id","school_year","week","grade","class","teacher","teacher_name","theme","goals","activities","evidence","reflection","created_at"])
-            st.dataframe(df_logs.drop(columns=["school_year"]), use_container_width=True, height=320)
+with st.expander("📚 自分 / 学年の探究ログを確認", expanded=False):
+gsel = st.selectbox("学年", ["すべて"] + list(STANDARD_HOURS.keys()), key="inq_grade_filter")
+csel = st.text_input("学級（空欄で全学級）", key="inq_class_filter")
+tsel = st.text_input("教員ID（空欄で全教員）", value=teacher_key, key="inq_teacher_filter")
+logs = fetch_inquiry_logs(current_school_year, grade=gsel, class_name=csel, teacher=tsel)
+if not logs:
+st.info("探究ログはまだありません。")
+else:
+df_logs = pd.DataFrame(logs, columns=["id","school_year","week","grade","class","teacher","teacher_name","theme","goals","activities","evidence","reflection","created_at"])
+st.dataframe(df_logs.drop(columns=["school_year"]), use_container_width=True, height=320)
 
-    st.markdown("---")
-    st.subheader("📝 一時保存・提出")
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("💾 一時保存（作業中断用）", key="draft_save_btn"):
-            plan = {"timetable": timetable}
-            upsert_draft(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, plan)
-            upsert_autosave(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, plan)
-            st.session_state["restore_plan"] = {"timetable": timetable}
-            st.success("一時保存しました。下書き一覧 / 自動保存一覧から再開できます。")
-    with col_b:
-        if st.button("✅ この内容で管理職へ提出する", key="submit_btn"):
-            errors = validate_timetable_for_submit(timetable, teacher_type)
-            if errors:
-                st.error("入力に不備があります。下記を修正してください：")
-                for e in errors:
-                    st.write(f"- {e}")
-            else:
-                submit_plan_from_current(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
-                st.success("週案を提出しました。管理職の承認をお待ちください。")
+st.markdown("---")
+st.subheader("📝 一時保存・提出")
+col_a, col_b = st.columns(2)
+with col_a:
+if st.button("💾 一時保存（作業中断用）", key="draft_save_btn"):
+plan = {"timetable": timetable}
+upsert_draft(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, plan)
+upsert_autosave(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, plan)
+st.session_state["restore_plan"] = {"timetable": timetable}
+st.success("一時保存しました。下書き一覧 / 自動保存一覧から再開できます。")
+with col_b:
+if st.button("✅ この内容で管理職へ提出する", key="submit_btn"):
+errors = validate_timetable_for_submit(timetable, teacher_type)
+if errors:
+st.error("入力に不備があります。下記を修正してください：")
+for e in errors:
+st.write(f"- {e}")
+else:
+submit_plan_from_current(current_school_year, teacher_key, teacher_display, base_grade, class_name, teacher_type, week_str, {"timetable": timetable})
+st.success("週案を提出しました。管理職の承認をお待ちください。")
 
     st.markdown("---")
     st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
