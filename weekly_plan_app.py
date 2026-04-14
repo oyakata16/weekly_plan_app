@@ -1949,25 +1949,26 @@ if role == "教員":
                     st.markdown("</div>", unsafe_allow_html=True)
 
 st.session_state["restore_plan"] = {"timetable": timetable}
-    week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
-    subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
 
-    st.markdown("---")
-    st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
-    for s in get_subjects_for_grade(base_grade):
-        st.write(f"- {s}: {int(round(subject_minutes_this_grade.get(s, 0)))} 分")
+week_minutes_all = compute_week_subject_minutes(timetable, base_grade)
+subject_minutes_this_grade = week_minutes_all.get(base_grade, {})
 
-    st.markdown("---")
-    st.subheader("⭐ 時数不足警告（年度全体）")
-    warn_msgs = hours_warning_messages(current_school_year)
-    if warn_msgs:
-        st.warning("不足 / 超過が検出されています（年間累積は『承認』で反映されます）。")
-        for m in warn_msgs[:20]:
-            st.write(f"- {m}")
-        if len(warn_msgs) > 20:
-            st.caption(f"…他 {len(warn_msgs)-20} 件")
-    else:
-        st.success("不足 / 超過の大きい科目は検出されませんでした。")
+st.markdown("---")
+st.markdown(f"#### この週の教科別 合計分数（{base_grade}）")
+for s in get_subjects_for_grade(base_grade):
+    st.write(f"- {s}: {int(round(subject_minutes_this_grade.get(s, 0)))} 分")
+
+st.markdown("---")
+st.subheader("⭐ 時数不足警告（年度全体）")
+warn_msgs = hours_warning_messages(current_school_year)
+if warn_msgs:
+    st.warning("不足 / 超過が検出されています（年間累積は『承認』で反映されます）。")
+    for m in warn_msgs[:20]:
+        st.write(f"- {m}")
+    if len(warn_msgs) > 20:
+        st.caption(f"…他 {len(warn_msgs)-20} 件")
+else:
+    st.success("不足 / 超過の大きい科目は検出されませんでした。")
 
     st.markdown("---")
     st.subheader("💾 自分の週案を保存（CSV）")
