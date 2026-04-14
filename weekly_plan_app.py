@@ -1201,11 +1201,11 @@ def validate_timetable_for_submit(tt: dict, teacher_type: str = "担任"):
     unique_errors = []
     for e in errors:
         if e not in seen:
-            unique_errors.append(e)
+            unique_errors.append(e) 
             seen.add(e)
     return unique_errors
     def has_meaningful_timetable_data(timetable: dict) -> bool:
-    tt = normalize_timetable(timetable)
+        tt = normalize_timetable(timetable)
 
     for day in DAYS:
         for period in PERIODS:
