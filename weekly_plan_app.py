@@ -1205,7 +1205,38 @@ def validate_timetable_for_submit(tt: dict, teacher_type: str = "担任"):
             seen.add(e)
     return unique_errors
 
+def has_meaningful_timetable_data(timetable: dict) -> bool:
+    tt = normalize_timetable(timetable)
 
+    for day in DAYS:
+        for period in PERIODS:
+            slot_minutes = PERIOD_MINUTES.get(day, {}).get(period, 0)
+            if slot_minutes <= 0:
+                continue
+
+            cell = tt.get(day, {}).get(period, empty_cell())
+            event = cell.get("event") or {}
+            main = cell.get("main") or {}
+
+            klass = (cell.get("class") or "").strip()
+            event_frac = float(event.get("fraction", 0.0) or 0.0)
+            event_content = (event.get("content") or "").strip()
+            main_subject = (main.get("subject") or "").strip()
+            main_content = (main.get("content") or "").strip()
+
+            if klass:
+                return True
+            if event_frac > 0:
+                return True
+            if event_content:
+                return True
+            if main_subject and main_subject != "（空欄）":
+                return True
+            if main_content:
+                return True
+
+    return False
+        
 def swap_cells_in_timetable(tt: dict, day_a: str, period_a: str, day_b: str, period_b: str):
     tt = normalize_timetable(tt)
     tt[day_a][period_a], tt[day_b][period_b] = tt[day_b][period_b], tt[day_a][period_a]
