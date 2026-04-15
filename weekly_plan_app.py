@@ -2174,6 +2174,30 @@ if st.button("未提出を確認"):
                 st.success("週案を提出しました。管理職の承認をお待ちください。")
 
     st.markdown("---")
+    import base64
+
+st.markdown("### 🖨 ワンクリック印刷")
+
+html_string = """
+<script>
+function printPage() {
+    window.print();
+}
+</script>
+<button onclick="printPage()" style="
+    background-color:#4CAF50;
+    color:white;
+    padding:10px 16px;
+    border:none;
+    border-radius:5px;
+    font-size:16px;
+    cursor:pointer;
+">
+📄 この週案を印刷（PDF保存）
+</button>
+"""
+
+st.components.v1.html(html_string, height=80)
     st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
     if st.checkbox("この週案を印刷用に表示する（A4縦1枚フィット）", key="print_toggle"):
         df_print = build_print_df(timetable)
