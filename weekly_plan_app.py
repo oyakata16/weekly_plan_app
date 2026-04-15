@@ -1569,13 +1569,17 @@ if st.sidebar.button("ログアウト", key="logout_btn"):
 # =========================
 if role == "教員":
     st.header("📘 週案の作成・提出（教員用）")
-    st.subheader("🚨 未提出チェック")
+    from datetime import datetime
 
-if st.button("未提出を確認"):
-    if draft_count > 0:
-        st.error(f"未提出あり：{draft_count} 件")
-    else:
-        st.success("全員提出済み")
+today = datetime.now().weekday()
+
+if today == 3:
+    st.info("📢 明日は週案提出締切です")
+elif today >= 4:
+    st.warning("⚠ 週案の提出締切日です（未提出があれば提出してください）")
+
+st.caption(f"提出先年度：{current_school_year}（管理職が設定）")
+st.info(f"ログイン中の利用者：{auth_display_name}（ID: {auth_user_id}）")
     st.caption(f"提出先年度：{current_school_year}（管理職が設定）")
     st.info(f"ログイン中の利用者：{auth_display_name}（ID: {auth_user_id}）")
 
@@ -2174,85 +2178,49 @@ if st.button("未提出を確認"):
                 st.success("週案を提出しました。管理職の承認をお待ちください。")
 
     st.markdown("---")
-    import base64
-
-st.markdown("### 🖨 ワンクリック印刷")
-
-html_string = """
-<script>
-function printPage() {
-    window.print();
-}
-</script>
-<button onclick="printPage()" style="
-    background-color:#4CAF50;
-    color:white;
-    padding:10px 16px;
-    border:none;
-    border-radius:5px;
-    font-size:16px;
-    cursor:pointer;
-">
-📄 この週案を印刷（PDF保存）
-</button>
-"""
-
-st.components.v1.html(html_string, height=80)
-st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
-
-if st.checkbox("この週案を印刷用に表示する（A4縦1枚フィット）", key="print_toggle"):
-    df_print = build_print_df(timetable)
-
-    if df_print.empty:
-        st.info("有効なコマがありません。")
-    else:
-        header_html = (
-            f"<div class='print-header print-only'>"
-            f"<strong>東小松川小学校　週の指導計画</strong>　　"
-            f"{current_school_year}　{base_grade}　{class_name}　"
-            f"{teacher_display}（{teacher_key}）　対象週：{week_str}"
-            f"</div>"
-        )
-
-        col_w0 = "7%"
-        col_wd = f"{93 // len(DAYS)}%"
-        th_days = "".join(f"<th style='width:{col_wd}'>{d}</th>" for d in DAYS)
-
-        table_rows = ""
-        for period in df_print.index:
-            row_cells = ""
-            for day in DAYS:
-                val = df_print.at[period, day]
-                lines = str(val).split("\n") if val else []
-
-                cell_html = ""
-                for line in lines:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    if line.startswith("[") and "]" in line:
-                        cell_html += f"<div class='print-cell-subject'>{line}</div>"
-                    else:
-                        cell_html += f"<div class='print-cell-content'>{line}</div>"
-
-                row_cells += f"<td>{cell_html}</td>"
-
-            table_rows += f"<tr><th>{period}</th>{row_cells}</tr>"
-
-        table_html = (
-            f"<table class='print-weekly-table' style='display:table'>"
-            f"<thead><tr><th style='width:{col_w0}'></th>{th_days}</tr></thead>"
-            f"<tbody>{table_rows}</tbody>"
-            f"</table>"
-        )
-
-        st.markdown(header_html + table_html, unsafe_allow_html=True)
-
-        st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str}**")
-
-        st.dataframe(df_print, use_container_width=True, height=480)
-
-        st.info("💡 ブラウザの印刷（Ctrl+P / ⌘+P）→「用紙サイズ：A4」「余白：なし or 最小」で1枚に収まります。")
+    st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
+    if st.checkbox("この週案を印刷用に表示する（A4縦1枚フィット）", key="print_toggle"):
+        df_print = build_print_df(timetable)
+        if df_print.empty:
+            st.info("有効なコマがありません。")
+        else:
+            header_html = (
+                f"<div class='print-header print-only'>"
+                f"<strong>東小松川小学校　週の指導計画</strong>　　"
+                f"{current_school_year}　{base_grade}　{class_name}　"
+                f"{teacher_display}（{teacher_key}）　対象週：{week_str}"
+                f"</div>"
+            )
+            col_w0 = "7%"
+            col_wd = f"{93 // len(DAYS)}%"
+            th_days = "".join(f"<th style='width:{col_wd}'>{d}</th>" for d in DAYS)
+            table_rows = ""
+            for period in df_print.index:
+                row_cells = ""
+                for day in DAYS:
+                    val = df_print.at[period, day]
+                    lines = str(val).split("\n") if val else []
+                    cell_html = ""
+                    for line in lines:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        if line.startswith("[") and "]" in line:
+                            cell_html += f"<div class='print-cell-subject'>{line}</div>"
+                        else:
+                            cell_html += f"<div class='print-cell-content'>{line}</div>"
+                    row_cells += f"<td>{cell_html}</td>"
+                table_rows += f"<tr><th>{period}</th>{row_cells}</tr>"
+            table_html = (
+                f"<table class='print-weekly-table' style='display:table'>"
+                f"<thead><tr><th style='width:{col_w0}'></th>{th_days}</tr></thead>"
+                f"<tbody>{table_rows}</tbody>"
+                f"</table>"
+            )
+            st.markdown(header_html + table_html, unsafe_allow_html=True)
+            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str}**")
+            st.dataframe(df_print, use_container_width=True, height=480)
+            st.info("💡 ブラウザの印刷（Ctrl+P / ⌘+P）→「用紙サイズ：A4」「余白：なし or 最小」で1枚に収まります。")
 
 # =========================
 # 管理職画面
