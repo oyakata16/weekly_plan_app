@@ -1569,17 +1569,6 @@ if st.sidebar.button("ログアウト", key="logout_btn"):
 # =========================
 if role == "教員":
     st.header("📘 週案の作成・提出（教員用）")
-    from datetime import datetime
-
-today = datetime.now().weekday()
-
-if today == 3:
-    st.info("📢 明日は週案提出締切です")
-elif today >= 4:
-    st.warning("⚠ 週案の提出締切日です（未提出があれば提出してください）")
-
-st.caption(f"提出先年度：{current_school_year}（管理職が設定）")
-st.info(f"ログイン中の利用者：{auth_display_name}（ID: {auth_user_id}）")
     st.caption(f"提出先年度：{current_school_year}（管理職が設定）")
     st.info(f"ログイン中の利用者：{auth_display_name}（ID: {auth_user_id}）")
 
