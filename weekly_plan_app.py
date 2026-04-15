@@ -28,6 +28,8 @@ from typing import Optional, List
 import pandas as pd
 import streamlit as st
 
+st.set_page_config(layout="wide")
+
 # =========================
 # 基本設定
 # =========================
