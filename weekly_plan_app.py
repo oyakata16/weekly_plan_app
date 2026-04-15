@@ -2198,7 +2198,7 @@ function printPage() {
 """
 
 st.components.v1.html(html_string, height=80)
-    st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
+st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
     if st.checkbox("この週案を印刷用に表示する（A4縦1枚フィット）", key="print_toggle"):
         df_print = build_print_df(timetable)
         if df_print.empty:
