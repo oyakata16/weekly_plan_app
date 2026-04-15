@@ -1569,6 +1569,13 @@ if st.sidebar.button("ログアウト", key="logout_btn"):
 # =========================
 if role == "教員":
     st.header("📘 週案の作成・提出（教員用）")
+    st.subheader("🚨 未提出チェック")
+
+if st.button("未提出を確認"):
+    if draft_count > 0:
+        st.error(f"未提出あり：{draft_count} 件")
+    else:
+        st.success("全員提出済み")
     st.caption(f"提出先年度：{current_school_year}（管理職が設定）")
     st.info(f"ログイン中の利用者：{auth_display_name}（ID: {auth_user_id}）")
 
