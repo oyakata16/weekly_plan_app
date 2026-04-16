@@ -2021,6 +2021,51 @@ if role == "教員":
             )
             st.dataframe(df_logs.drop(columns=["school_year"]), use_container_width=True, height=320)
 
+st.markdown("### 📊 時間割（枠付き表示）")
+
+table_html = "<table style='border-collapse:collapse; width:100%;'>"
+
+table_html += "<tr><th style='border:2px solid black; background:#e6e6e6;'></th>"
+for d in DAYS:
+    table_html += f"<th style='border:2px solid black; padding:6px; background:#d0d0d0;'>{d}</th>"
+table_html += "</tr>"
+
+for p in PERIODS:
+    if not any(PERIOD_MINUTES[day][p] > 0 for day in DAYS):
+        continue
+
+    table_html += f"<tr><th style='border:2px solid black; padding:6px; background:#e6e6e6;'>{p}</th>"
+
+    for d in DAYS:
+        slot_minutes = PERIOD_MINUTES[d][p]
+        if slot_minutes <= 0:
+            table_html += "<td style='border:2px solid black;'></td>"
+            continue
+
+        cell = timetable.get(d, {}).get(p, {})
+        segs = cell_to_segments(cell, slot_minutes)
+
+        text = ""
+        for seg in segs:
+            subj = seg.get("subject", "")
+            cont = seg.get("content", "")
+            klass = seg.get("class", "")
+            mins = int(round(seg.get("minutes", 0)))
+            head = f"[{mins}分]"
+            if klass:
+                head += f" {klass}"
+            if subj:
+                head += f" {subj}"
+            text += f"<div style='margin-bottom:4px;'><strong>{head}</strong><br>{cont}</div>"
+
+        table_html += f"<td style='border:2px solid black; padding:6px; vertical-align:top; min-height:60px;'>{text}</td>"
+
+    table_html += "</tr>"
+
+table_html += "</table>"
+
+st.markdown(table_html, unsafe_allow_html=True)
+    
     st.markdown("---")
     st.subheader("📝 一時保存・提出")
     col_a, col_b = st.columns(2)
