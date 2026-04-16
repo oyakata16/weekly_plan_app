@@ -28,8 +28,6 @@ from typing import Optional, List
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(layout="wide")
-
 # =========================
 # 基本設定
 # =========================
@@ -152,10 +150,10 @@ st.markdown(
         font-size:13px; font-weight:600;
     }
     @media print {
-        /* ======= 印刷レイアウト（A4縦1枚フィット） ======= */
+        /* ======= 印刷レイアウト（A4横1枚フィット強化） ======= */
         @page {
-            size: A4 portrait;
-            margin: 8mm 8mm 8mm 8mm;
+            size: A4 landscape;
+            margin: 4mm 4mm 4mm 4mm;
         }
         /* 不要なUI要素を非表示 */
         header, footer, .stSidebar,
@@ -172,34 +170,37 @@ st.markdown(
         .stAlert, .stInfo, .stWarning, .stSuccess,
         .no-print { display: none !important; }
 
-        /* メインコンテナ */
         .main .block-container {
             padding: 0 !important;
             margin: 0 !important;
             max-width: 100% !important;
         }
-        html, body { font-size: 9px !important; }
 
-        /* 印刷対象の週案テーブル */
-        .print-timetable {
-            display: block !important;
-            page-break-inside: avoid;
+        html, body {
+            font-size: 7px !important;
+            zoom: 0.92;
         }
+
+        .print-only { display: block !important; }
+
         table.print-weekly-table {
+            display: table !important;
             width: 100% !important;
-            font-size: 8px !important;
+            font-size: 6.6px !important;
             border-collapse: collapse !important;
             table-layout: fixed !important;
             page-break-inside: avoid !important;
         }
+
         table.print-weekly-table th,
         table.print-weekly-table td {
             border: 1px solid #000 !important;
-            padding: 2px 3px !important;
+            padding: 1px 2px !important;
             vertical-align: top !important;
             word-break: break-word !important;
-            line-height: 1.3 !important;
+            line-height: 1.15 !important;
         }
+
         table.print-weekly-table th {
             background: #e0e0e0 !important;
             -webkit-print-color-adjust: exact !important;
@@ -207,26 +208,23 @@ st.markdown(
             font-weight: bold !important;
             text-align: center !important;
         }
-        .print-header { font-size: 10px !important; margin-bottom: 3mm !important; }
-        .print-cell-subject { font-weight: bold; }
-        .print-cell-content { font-size: 7.5px; color: #333; }
-        .print-cell-event { background: #fff4cc !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
 
-        /* dataframe（streamlit標準テーブル）フォールバック */
-        .stDataFrame table {
-            width: 100% !important;
+        .print-header {
             font-size: 8px !important;
-            border-collapse: collapse !important;
+            margin-bottom: 2mm !important;
         }
-        .stDataFrame th, .stDataFrame td {
-            border: 1px solid #000 !important;
-            padding: 2px 3px !important;
-            white-space: pre-wrap !important;
-            word-break: break-word !important;
+
+        .print-cell-subject {
+            font-weight: bold;
+            font-size: 6.7px !important;
         }
-        /* 印刷ヘッダー情報だけ表示 */
-        .print-only { display: block !important; }
-        /* ページ全体を1枚に収める */
+
+        .print-cell-content {
+            font-size: 6.1px !important;
+            color: #333;
+        }
+
+        .stDataFrame { display: none !important; }
         * { overflow: visible !important; }
     }
     /* 通常表示時は印刷専用要素を隠す */
@@ -2168,48 +2166,65 @@ if role == "教員":
 
     st.markdown("---")
     st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
-    if st.checkbox("この週案を印刷用に表示する（A4縦1枚フィット）", key="print_toggle"):
-        df_print = build_print_df(timetable)
-        if df_print.empty:
-            st.info("有効なコマがありません。")
-        else:
-            header_html = (
-                f"<div class='print-header print-only'>"
-                f"<strong>東小松川小学校　週の指導計画</strong>　　"
-                f"{current_school_year}　{base_grade}　{class_name}　"
-                f"{teacher_display}（{teacher_key}）　対象週：{week_str}"
-                f"</div>"
-            )
-            col_w0 = "7%"
-            col_wd = f"{93 // len(DAYS)}%"
-            th_days = "".join(f"<th style='width:{col_wd}'>{d}</th>" for d in DAYS)
-            table_rows = ""
-            for period in df_print.index:
-                row_cells = ""
-                for day in DAYS:
-                    val = df_print.at[period, day]
-                    lines = str(val).split("\n") if val else []
-                    cell_html = ""
-                    for line in lines:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        if line.startswith("[") and "]" in line:
-                            cell_html += f"<div class='print-cell-subject'>{line}</div>"
-                        else:
-                            cell_html += f"<div class='print-cell-content'>{line}</div>"
-                    row_cells += f"<td>{cell_html}</td>"
-                table_rows += f"<tr><th>{period}</th>{row_cells}</tr>"
-            table_html = (
-                f"<table class='print-weekly-table' style='display:table'>"
-                f"<thead><tr><th style='width:{col_w0}'></th>{th_days}</tr></thead>"
-                f"<tbody>{table_rows}</tbody>"
-                f"</table>"
-            )
-            st.markdown(header_html + table_html, unsafe_allow_html=True)
-            st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str}**")
-            st.dataframe(df_print, use_container_width=True, height=480)
-            st.info("💡 ブラウザの印刷（Ctrl+P / ⌘+P）→「用紙サイズ：A4」「余白：なし or 最小」で1枚に収まります。")
+
+    df_print = build_print_df(timetable)
+    if df_print.empty:
+        st.info("有効なコマがありません。")
+    else:
+        header_html = (
+            f"<div class='print-header print-only'>"
+            f"<strong>東小松川小学校　週の指導計画</strong>　　"
+            f"{current_school_year}　{base_grade}　{class_name}　"
+            f"{teacher_display}（{teacher_key}）　対象週：{week_str}"
+            f"</div>"
+        )
+        col_w0 = "7%"
+        col_wd = f"{93 // len(DAYS)}%"
+        th_days = "".join(f"<th style='width:{col_wd}'>{d}</th>" for d in DAYS)
+        table_rows = ""
+        for period in df_print.index:
+            row_cells = ""
+            for day in DAYS:
+                val = df_print.at[period, day]
+                lines = str(val).split("\n") if val else []
+                cell_html = ""
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("[") and "]" in line:
+                        cell_html += f"<div class='print-cell-subject'>{line}</div>"
+                    else:
+                        cell_html += f"<div class='print-cell-content'>{line}</div>"
+                row_cells += f"<td>{cell_html}</td>"
+            table_rows += f"<tr><th>{period}</th>{row_cells}</tr>"
+        table_html = (
+            f"<table class='print-weekly-table' style='display:table'>"
+            f"<thead><tr><th style='width:{col_w0}'></th>{th_days}</tr></thead>"
+            f"<tbody>{table_rows}</tbody>"
+            f"</table>"
+        )
+
+        st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str}**")
+        st.dataframe(df_print, use_container_width=True, height=420)
+
+        print_html = f"""
+        {header_html}
+        {table_html}
+        <div style='margin:12px 0 6px 0;' class='no-print'>
+          <button onclick='window.print()' style='
+              background:#1f77b4;
+              color:white;
+              border:none;
+              padding:10px 18px;
+              border-radius:8px;
+              font-size:16px;
+              cursor:pointer;
+          '>🖨 この週案を印刷 / PDF保存</button>
+        </div>
+        """
+        st.components.v1.html(print_html, height=900, scrolling=True)
+        st.info("ボタンを押すと印刷画面が開きます。保存先で『PDFに保存』を選べます。")
 
 # =========================
 # 管理職画面
