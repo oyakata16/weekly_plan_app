@@ -42,198 +42,105 @@ DEFAULT_WEEKS_PER_YEAR = 35
 
 st.set_page_config(page_title="週案管理システム", layout="wide")
 
-st.markdown(
-    """
-    <style>
-    html, body, [class*="css"]  { font-size: 16px; }
-    div[data-baseweb="select"] {
-        font-size: 14px !important;
-        white-space: normal !important;
-        overflow-wrap: anywhere !important;
+st.markdown("""
+<style>
+
+/* ===== 入力セル（時間割） ===== */
+.tt-cell {
+    border: 2px solid #444 !important;
+    border-radius: 0 !important;
+    padding: 8px 8px 4px 8px !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
+}
+
+/* ===== 行ラベル（1校時など） ===== */
+.tt-rowlabel {
+    border: 2px solid #444 !important;
+    border-radius: 0 !important;
+    padding: 8px 6px !important;
+    margin: 0 !important;
+    background: #e6e6e6 !important;
+    font-weight: 700;
+    text-align: center;
+    color: #000000 !important;
+}
+
+/* ===== 曜日ヘッダ ===== */
+.tt-headcell {
+    border: 2px solid #444 !important;
+    border-radius: 0 !important;
+    padding: 8px 6px !important;
+    margin: 0 !important;
+    background: #d0d0d0 !important;
+    font-weight: 800;
+    text-align: center;
+    color: #000000 !important;
+}
+
+/* ===== 列の余白を削って表っぽく ===== */
+div[data-testid="column"] {
+    padding-left: 1px !important;
+    padding-right: 1px !important;
+}
+
+/* ===== DataFrame（確認表）も罫線強化 ===== */
+.stDataFrame table,
+.stDataFrame th,
+.stDataFrame td {
+    border: 2px solid #444 !important;
+}
+
+/* ===== 印刷用 ===== */
+@media print {
+
+    @page {
+        size: A4 landscape;
+        margin: 4mm;
+    }
+
+    html, body {
+        font-size: 7px !important;
+        zoom: 0.92;
+    }
+
+    .main .block-container {
+        padding: 0 !important;
+        margin: 0 !important;
+        max-width: 100% !important;
+    }
+
+    table.print-weekly-table {
         width: 100% !important;
-        min-width: 140px !important;
+        border-collapse: collapse !important;
+        table-layout: fixed !important;
+        font-size: 6.5px !important;
     }
-    div[data-baseweb="select"] span {
-        font-size: 14px !important;
-        white-space: normal !important;
-        line-height: 1.3 !important;
+
+    table.print-weekly-table th,
+    table.print-weekly-table td {
+        border: 1.5px solid #000 !important;
+        padding: 2px !important;
+        vertical-align: top !important;
+        word-break: break-word !important;
+        line-height: 1.15 !important;
     }
-    textarea { font-size: 14px !important; }
-    .status-label {
-        display: inline-block; padding: 2px 8px; border-radius: 999px;
-        font-size: 12px; color: white;
-    }
-    .status-teishutsu { background-color: #f39c12; }
-    .status-shonin    { background-color: #27ae60; }
-    .status-sashimodoshi { background-color: #c0392b; }
-    .status-shitagaki { background-color: #7f8c8d; }
-    .tt-cell {
-        border: 1px solid #999 !important; border-radius: 6px !important;
-        padding: 6px 6px 2px 6px !important; margin: 2px 0 6px 0 !important;
-        background: rgba(255,255,255,0.80);
-    }
-    .tt-rowlabel {
-        border: 1px solid #999 !important;
-        border-radius: 6px !important;
-        padding: 8px 6px !important;
-        margin: 2px 0 6px 0 !important;
+
+    table.print-weekly-table th {
         background: #e0e0e0 !important;
-        font-weight: 700;
-        text-align: center;
-        color: #000000 !important;
-    }
-    .tt-headcell {
-        border: 1px solid #999 !important;
-        border-radius: 6px !important;
-        padding: 8px 6px !important;
-        margin: 2px 0 6px 0 !important;
-        background: #d6d6d6 !important;
-        font-weight: 800;
-        text-align: center;
-        color: #000000 !important;
-    }
-    .tt-section {
-        font-size: 12px; font-weight: 800; padding: 2px 6px; border-radius: 999px;
-        display: inline-block; margin: 2px 0 4px 0; border: 1px solid #777;
-    }
-    .tt-event { background: rgba(255,244,204,0.95); }
-    .tt-main  { background: rgba(231,240,255,0.95); }
-    .tt-mini  { font-size: 12px; opacity: 0.9; }
-    .dataframe td, .dataframe th {
-        white-space: pre-wrap !important; word-break: break-word !important;
-        line-height: 1.35 !important; vertical-align: top !important;
-    }
-    div[data-testid="stVerticalBlockBorderWrapper"]{
-        border: 1px solid #000 !important; border-radius: 0px !important; box-shadow: none !important;
+        font-weight: bold !important;
+        text-align: center !important;
     }
 
-    .status-card {
-        padding: 12px 14px;
-        border-radius: 10px;
-        margin-bottom: 8px;
-        font-weight: 700;
-        border-left: 6px solid transparent;
+    .print-header {
+        font-size: 8px !important;
+        margin-bottom: 2mm !important;
     }
-    .status-missing { background-color: #ffe5e5; border-left-color: #ff4d4d; }
-    .status-draft { background-color: #fff7cc; border-left-color: #ffcc00; }
-    .status-done { background-color: #e6ffe6; border-left-color: #33cc33; }
-    .matrix-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 13px;
-    }
-    .matrix-table th, .matrix-table td {
-        border: 1px solid #d0d7de;
-        padding: 6px 8px;
-        text-align: center;
-        vertical-align: middle;
-    }
-    .matrix-table th:first-child, .matrix-table td:first-child {
-        text-align: left;
-        white-space: nowrap;
-    }
-    .matrix-cell {
-        text-align: center;
-        font-weight: 700;
-        border-radius: 6px;
-        padding: 4px 6px;
-        display: inline-block;
-        min-width: 28px;
-    }
-    .miss { background-color:#ffcccc; color:#8b0000; }
-    .draft { background-color:#fff0b3; color:#8a6d00; }
-    .done { background-color:#ccffcc; color:#006400; }
-    .empty { background-color:#f4f4f4; color:#666666; }
-    .tag-chip {
-        display:inline-block; padding:4px 10px; margin:2px 4px 2px 0;
-        border-radius:999px; background:#eef4ff; border:1px solid #b8cdf5;
-        font-size:13px; font-weight:600;
-    }
-    @media print {
-        /* ======= 印刷レイアウト（A4横1枚フィット強化） ======= */
-        @page {
-            size: A4 landscape;
-            margin: 4mm 4mm 4mm 4mm;
-        }
-        /* 不要なUI要素を非表示 */
-        header, footer, .stSidebar,
-        [data-testid="stToolbar"],
-        [data-testid="stDecoration"],
-        [data-testid="stStatusWidget"],
-        button, .stButton,
-        [data-testid="stSidebar"],
-        section[data-testid="stSidebar"],
-        .stCheckbox, .stSelectbox, .stDateInput,
-        .stTextInput, .stTextArea, .stRadio,
-        hr, .stMarkdown hr,
-        [data-testid="stExpander"] summary,
-        .stAlert, .stInfo, .stWarning, .stSuccess,
-        .no-print { display: none !important; }
+}
 
-        .main .block-container {
-            padding: 0 !important;
-            margin: 0 !important;
-            max-width: 100% !important;
-        }
-
-        html, body {
-            font-size: 7px !important;
-            zoom: 0.92;
-        }
-
-        .print-only { display: block !important; }
-
-        table.print-weekly-table {
-            display: table !important;
-            width: 100% !important;
-            font-size: 6.6px !important;
-            border-collapse: collapse !important;
-            table-layout: fixed !important;
-            page-break-inside: avoid !important;
-        }
-
-        table.print-weekly-table th,
-        table.print-weekly-table td {
-            border: 1px solid #000 !important;
-            padding: 1px 2px !important;
-            vertical-align: top !important;
-            word-break: break-word !important;
-            line-height: 1.15 !important;
-        }
-
-        table.print-weekly-table th {
-            background: #e0e0e0 !important;
-            -webkit-print-color-adjust: exact !important;
-            print-color-adjust: exact !important;
-            font-weight: bold !important;
-            text-align: center !important;
-        }
-
-        .print-header {
-            font-size: 8px !important;
-            margin-bottom: 2mm !important;
-        }
-
-        .print-cell-subject {
-            font-weight: bold;
-            font-size: 6.7px !important;
-        }
-
-        .print-cell-content {
-            font-size: 6.1px !important;
-            color: #333;
-        }
-
-        .stDataFrame { display: none !important; }
-        * { overflow: visible !important; }
-    }
-    /* 通常表示時は印刷専用要素を隠す */
-    .print-only { display: none; }
-    .print-weekly-table { display: none; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+</style>
+""", unsafe_allow_html=True)
 
 COLUMN_WIDTHS = [0.7] + [1.6] * 6
 DAYS = ["月", "火", "水", "木", "金", "土"]
