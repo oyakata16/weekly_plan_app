@@ -71,6 +71,7 @@ st.markdown(
         border: 1px solid #999 !important; border-radius: 6px !important;
         padding: 6px 6px 2px 6px !important; margin: 2px 0 6px 0 !important;
         background: rgba(255,255,255,0.80);
+        color: #111111 !important;
     }
     .tt-rowlabel {
         border: 1px solid #999 !important;
@@ -95,10 +96,11 @@ st.markdown(
     .tt-section {
         font-size: 12px; font-weight: 800; padding: 2px 6px; border-radius: 999px;
         display: inline-block; margin: 2px 0 4px 0; border: 1px solid #777;
+        color: #111111 !important;
     }
-    .tt-event { background: rgba(255,244,204,0.95); }
-    .tt-main  { background: rgba(231,240,255,0.95); }
-    .tt-mini  { font-size: 12px; opacity: 0.9; }
+    .tt-event { background: rgba(255,244,204,0.95); color: #5a3e00 !important; }
+    .tt-main  { background: rgba(231,240,255,0.95); color: #0a2a5c !important; }
+    .tt-mini  { font-size: 12px; opacity: 0.9; color: #222222 !important; }
     .dataframe td, .dataframe th {
         white-space: pre-wrap !important; word-break: break-word !important;
         line-height: 1.35 !important; vertical-align: top !important;
@@ -1150,21 +1152,21 @@ def build_print_df(timetable: dict) -> pd.DataFrame:
 def render_timetable_preview_table(timetable: dict) -> str:
     tt = normalize_timetable(timetable)
     html = []
-    html.append("<table style='border-collapse:collapse; width:100%; table-layout:fixed; font-size:13px;'>")
-    html.append("<tr><th style='border:2px solid #222; background:#e6e6e6; width:80px;'></th>")
+    html.append("<table style='border-collapse:collapse; width:100%; table-layout:fixed; font-size:13px; color:#111111;'>")
+    html.append("<tr><th style='border:2px solid #222; background:#e6e6e6; color:#111111; width:80px;'></th>")
     for day in DAYS:
-        html.append(f"<th style='border:2px solid #222; background:#d0d0d0; padding:6px;'>{day}</th>")
+        html.append(f"<th style='border:2px solid #222; background:#d0d0d0; color:#111111; padding:6px;'>{day}</th>")
     html.append("</tr>")
 
     for period in PERIODS:
         if not any(PERIOD_MINUTES[day][period] > 0 for day in DAYS):
             continue
 
-        html.append(f"<tr><th style='border:2px solid #222; background:#e6e6e6; padding:6px; vertical-align:top;'>{period}</th>")
+        html.append(f"<tr><th style='border:2px solid #222; background:#e6e6e6; color:#111111; padding:6px; vertical-align:top;'>{period}</th>")
         for day in DAYS:
             slot_minutes = PERIOD_MINUTES[day][period]
             if slot_minutes <= 0:
-                html.append("<td style='border:2px solid #222; background:#f7f7f7;'></td>")
+                html.append("<td style='border:2px solid #222; background:#f7f7f7; color:#111111;'></td>")
                 continue
 
             cell = tt.get(day, {}).get(period, empty_cell())
@@ -1187,7 +1189,7 @@ def render_timetable_preview_table(timetable: dict) -> str:
                 pieces.append(block)
 
             cell_html = ''.join(pieces) if pieces else '&nbsp;'
-            html.append(f"<td style='border:2px solid #222; padding:6px; vertical-align:top; background:#fff; min-height:64px;'>{cell_html}</td>")
+            html.append(f"<td style='border:2px solid #222; padding:6px; vertical-align:top; background:#ffffff; color:#111111; min-height:64px;'>{cell_html}</td>")
 
         html.append("</tr>")
 
