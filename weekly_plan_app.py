@@ -2234,7 +2234,13 @@ if role == "教員":
         )
         col_w0 = "7%"
         col_wd = f"{93 // len(DAYS)}%"
-        th_days = "".join(f"<th style='width:{col_wd}'>{d}</th>" for d in DAYS)
+        # インラインスタイルで枠線を直書き（印刷・PDF時もブラウザ設定に依存しない）
+        _b = "border:1px solid #000000;"
+        _th_head = f"{_b}width:{col_wd};padding:4px 5px;background:#d0d0d0;color:#111111;font-weight:bold;text-align:center;vertical-align:middle;"
+        _th_row  = f"{_b}width:{col_w0};padding:4px 5px;background:#e8e8e8;color:#111111;font-weight:bold;text-align:center;vertical-align:top;white-space:nowrap;"
+        _td      = f"{_b}padding:4px 5px;vertical-align:top;word-break:break-word;line-height:1.35;color:#111111;background:#ffffff;"
+        _th_corn = f"{_b}width:{col_w0};background:#d0d0d0;"
+        th_days = "".join(f"<th style='{_th_head}'>{d}</th>" for d in DAYS)
         table_rows = ""
         for period in df_print.index:
             row_cells = ""
@@ -2247,14 +2253,14 @@ if role == "教員":
                     if not line:
                         continue
                     if line.startswith("[") and "]" in line:
-                        cell_html += f"<div class='print-cell-subject'>{line}</div>"
+                        cell_html += f"<div style='font-weight:bold;font-size:12px;color:#111111;'>{line}</div>"
                     else:
-                        cell_html += f"<div class='print-cell-content'>{line}</div>"
-                row_cells += f"<td>{cell_html}</td>"
-            table_rows += f"<tr><th>{period}</th>{row_cells}</tr>"
+                        cell_html += f"<div style='font-size:11px;color:#333333;'>{line}</div>"
+                row_cells += f"<td style='{_td}'>{cell_html}</td>"
+            table_rows += f"<tr><th style='{_th_row}'>{period}</th>{row_cells}</tr>"
         table_html = (
-            f"<table class='print-weekly-table' style='display:table'>"
-            f"<thead><tr><th style='width:{col_w0}'></th>{th_days}</tr></thead>"
+            f"<table style='border-collapse:collapse;width:100%;table-layout:fixed;font-size:12px;color:#111111;'>"
+            f"<thead><tr><th style='{_th_corn}'></th>{th_days}</tr></thead>"
             f"<tbody>{table_rows}</tbody>"
             f"</table>"
         )
@@ -2263,6 +2269,30 @@ if role == "教員":
         st.dataframe(df_print, use_container_width=True, height=420)
 
         print_html = f"""
+        <style>
+          body {{
+            font-family: sans-serif;
+            font-size: 13px;
+            color: #111111;
+            background: #ffffff;
+            margin: 8px;
+          }}
+          .print-header {{
+            font-size: 13px;
+            margin-bottom: 8px;
+            font-weight: bold;
+          }}
+          @media print {{
+            @page {{ size: A4 landscape; margin: 8mm; }}
+            body {{ font-size: 7px; color: #111111; }}
+            table {{ font-size: 6.6px !important; }}
+            th, td {{
+              -webkit-print-color-adjust: exact !important;
+              print-color-adjust: exact !important;
+            }}
+            .no-print {{ display: none !important; }}
+          }}
+        </style>
         {header_html}
         {table_html}
         <div style='margin:12px 0 6px 0;' class='no-print'>
