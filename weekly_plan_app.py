@@ -2229,12 +2229,13 @@ if role == "教員":
             return ""
 
         _bh = "border:1px solid #000;"
-        _th_s = f"{_bh}padding:3px 5px;background:#d0d0d0;color:#111;font-weight:bold;text-align:center;font-size:10px;white-space:nowrap;"
-        _td_l = f"{_bh}padding:3px 5px;background:#f8f8f8;color:#111;font-size:10px;white-space:nowrap;"
-        _td_c = f"{_bh}padding:3px 5px;color:#111;text-align:right;font-size:10px;"
-        _td_warn = f"{_bh}padding:3px 5px;background:#ffe5e5;color:#8b0000;font-weight:bold;text-align:right;font-size:10px;"
-        _td_ok   = f"{_bh}padding:3px 5px;background:#e6ffe6;color:#006400;text-align:right;font-size:10px;"
-        _td_over = f"{_bh}padding:3px 5px;background:#fff0b3;color:#7a5c00;font-weight:bold;text-align:right;font-size:10px;"
+        _fs = "font-size:8.5px;"
+        _th_s = f"{_bh}padding:2px 4px;background:#d0d0d0;color:#111;font-weight:bold;text-align:center;{_fs}white-space:nowrap;"
+        _td_l = f"{_bh}padding:2px 4px;background:#f8f8f8;color:#111;{_fs}white-space:nowrap;"
+        _td_c = f"{_bh}padding:2px 4px;color:#111;text-align:right;{_fs}"
+        _td_warn = f"{_bh}padding:2px 4px;background:#ffe5e5;color:#8b0000;font-weight:bold;text-align:right;{_fs}"
+        _td_ok   = f"{_bh}padding:2px 4px;background:#e6ffe6;color:#006400;text-align:right;{_fs}"
+        _td_over = f"{_bh}padding:2px 4px;background:#fff0b3;color:#7a5c00;font-weight:bold;text-align:right;{_fs}"
 
         rows_html = ""
         for _, r in df_g.iterrows():
@@ -2331,64 +2332,105 @@ if role == "教員":
         hours_table_html = build_hours_table_html_for_grade(current_school_year, base_grade)
         if hours_table_html:
             hours_section_html = (
-                f"<div style='margin-top:14px;page-break-inside:avoid;'>"
-                f"<div style='font-size:11px;font-weight:bold;color:#111;margin-bottom:3px;border-bottom:1px solid #999;padding-bottom:2px;'>"
-                f"📊 年間時数集計表（{base_grade}）― {current_school_year} 累積（承認済分）"
-                f"</div>"
+                f"<div style='flex:0 0 auto;min-width:150px;max-width:210px;'>"
+                f"<div style='font-size:8px;font-weight:bold;color:#111;margin-bottom:2px;"
+                f"border-bottom:1px solid #999;padding-bottom:1px;'>"
+                f"📊 年間時数集計（{base_grade}）</div>"
                 f"{hours_table_html}"
                 f"</div>"
             )
         else:
             hours_section_html = (
-                f"<div style='margin-top:14px;font-size:10px;color:#999;'>"
-                f"※ 時数データがありません（年度初期化・承認後に反映されます）。"
+                f"<div style='flex:0 0 auto;font-size:8px;color:#999;min-width:120px;'>"
+                f"※ 時数データなし<br>（承認後に反映）"
                 f"</div>"
             )
 
         st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str}**")
         st.dataframe(df_print, use_container_width=True, height=420)
 
+        # 時間割表を左、時数表を右に並べるラッパー
+        two_col_html = (
+            f"<div id='fit-wrap' style='"
+            f"display:flex;flex-direction:row;align-items:flex-start;"
+            f"gap:10px;width:100%;'>"
+            f"<div style='flex:1 1 auto;min-width:0;'>{table_html}</div>"
+            f"{hours_section_html}"
+            f"</div>"
+        )
+
         print_html = f"""
         <style>
+          * {{ box-sizing: border-box; }}
           body {{
             font-family: sans-serif;
-            font-size: 13px;
+            font-size: 11px;
             color: #111111;
             background: #ffffff;
-            margin: 8px;
+            margin: 4px;
           }}
           .print-header {{
-            font-size: 13px;
-            margin-bottom: 8px;
+            font-size: 11px;
+            margin-bottom: 5px;
             font-weight: bold;
           }}
+          #page-wrap {{
+            width: 1060px;
+            transform-origin: top left;
+          }}
           @media print {{
-            @page {{ size: A4 landscape; margin: 8mm; }}
-            body {{ font-size: 7px; color: #111111; }}
-            table {{ font-size: 6.6px !important; }}
+            @page {{
+              size: A4 landscape;
+              margin: 6mm 6mm 6mm 6mm;
+            }}
+            html, body {{
+              width: 277mm;
+              height: 185mm;
+              margin: 0;
+              padding: 0;
+              overflow: hidden;
+            }}
+            #page-wrap {{
+              width: 277mm;
+              transform: none;
+            }}
+            table {{
+              font-size: 6px !important;
+            }}
             th, td {{
               -webkit-print-color-adjust: exact !important;
               print-color-adjust: exact !important;
+              padding: 1px 3px !important;
             }}
             .no-print {{ display: none !important; }}
+            .print-header {{ font-size: 7px !important; margin-bottom: 2mm !important; }}
           }}
         </style>
-        {header_html}
-        {table_html}
-        {hours_section_html}
-        <div style='margin:12px 0 6px 0;' class='no-print'>
+        <script>
+          function fitToFrame() {{
+            var wrap = document.getElementById('page-wrap');
+            if (!wrap) return;
+            var frameW = document.documentElement.clientWidth - 8;
+            var scale = Math.min(1, frameW / 1060);
+            wrap.style.transform = 'scale(' + scale + ')';
+            wrap.style.transformOrigin = 'top left';
+            document.body.style.height = Math.ceil(wrap.offsetHeight * scale + 8) + 'px';
+          }}
+          window.addEventListener('load', fitToFrame);
+          window.addEventListener('resize', fitToFrame);
+        </script>
+        <div id="page-wrap">
+          {header_html}
+          {two_col_html}
+        </div>
+        <div style='margin:10px 0 4px 0;' class='no-print'>
           <button onclick='window.print()' style='
-              background:#1f77b4;
-              color:white;
-              border:none;
-              padding:10px 18px;
-              border-radius:8px;
-              font-size:16px;
-              cursor:pointer;
-          '>🖨 この週案を印刷 / PDF保存</button>
+              background:#1f77b4;color:white;border:none;
+              padding:8px 16px;border-radius:8px;font-size:15px;cursor:pointer;
+          '>🖨 この週案を印刷 / PDF保存（A4横1枚）</button>
         </div>
         """
-        st.components.v1.html(print_html, height=1100, scrolling=True)
+        st.components.v1.html(print_html, height=700, scrolling=False)
         st.info("ボタンを押すと印刷画面が開きます。保存先で『PDFに保存』を選べます。")
 
 # =========================
