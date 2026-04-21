@@ -2332,105 +2332,143 @@ if role == "教員":
         hours_table_html = build_hours_table_html_for_grade(current_school_year, base_grade)
         if hours_table_html:
             hours_section_html = (
-                f"<div style='flex:0 0 auto;min-width:150px;max-width:210px;'>"
-                f"<div style='font-size:8px;font-weight:bold;color:#111;margin-bottom:2px;"
-                f"border-bottom:1px solid #999;padding-bottom:1px;'>"
+                f"<div id='hours-col' style='flex:0 0 auto;'>"
+                f"<div style='font-size:1em;font-weight:bold;color:#111;margin-bottom:0.2em;"
+                f"border-bottom:1px solid #999;padding-bottom:0.1em;'>"
                 f"📊 年間時数集計（{base_grade}）</div>"
                 f"{hours_table_html}"
                 f"</div>"
             )
         else:
             hours_section_html = (
-                f"<div style='flex:0 0 auto;font-size:8px;color:#999;min-width:120px;'>"
-                f"※ 時数データなし<br>（承認後に反映）"
+                f"<div id='hours-col' style='flex:0 0 auto;font-size:1em;color:#999;'>"
+                f"※ 時数データなし（承認後に反映）"
                 f"</div>"
             )
 
         st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str}**")
         st.dataframe(df_print, use_container_width=True, height=420)
 
-        # 時間割表を左、時数表を右に並べるラッパー
+        # 時間割（左）＋時数表（右）を横並び
         two_col_html = (
-            f"<div id='fit-wrap' style='"
-            f"display:flex;flex-direction:row;align-items:flex-start;"
-            f"gap:10px;width:100%;'>"
-            f"<div style='flex:1 1 auto;min-width:0;'>{table_html}</div>"
+            f"<div style='display:flex;flex-direction:row;align-items:flex-start;gap:1em;'>"
+            f"<div id='tt-col' style='flex:1 1 auto;min-width:0;'>{table_html}</div>"
             f"{hours_section_html}"
             f"</div>"
         )
 
+        # A4の印刷可能領域（mm）。縦横どちらにもフィットさせるためJSで判定。
+        # 縦：幅190mm 高さ267mm / 横：幅277mm 高さ190mm（余白10mm想定）
         print_html = f"""
         <style>
-          * {{ box-sizing: border-box; }}
+          * {{ box-sizing: border-box; margin: 0; padding: 0; }}
           body {{
-            font-family: sans-serif;
-            font-size: 11px;
-            color: #111111;
-            background: #ffffff;
-            margin: 4px;
-          }}
-          .print-header {{
-            font-size: 11px;
-            margin-bottom: 5px;
-            font-weight: bold;
+            font-family: 'Meiryo', 'Hiragino Kaku Gothic ProN', sans-serif;
+            background: #fff;
+            color: #111;
           }}
           #page-wrap {{
-            width: 1060px;
             transform-origin: top left;
+            display: inline-block;
           }}
+          .print-header {{
+            font-weight: bold;
+            margin-bottom: 0.4em;
+          }}
+          /* 印刷時：JS計算のscaleを消してA4ぴったりに */
           @media print {{
-            @page {{
-              size: A4 landscape;
-              margin: 6mm 6mm 6mm 6mm;
-            }}
-            html, body {{
-              width: 277mm;
-              height: 185mm;
-              margin: 0;
-              padding: 0;
-              overflow: hidden;
-            }}
+            html, body {{ margin:0; padding:0; background:#fff; }}
             #page-wrap {{
-              width: 277mm;
-              transform: none;
+              transform: none !important;
+              width: var(--print-width) !important;
             }}
-            table {{
-              font-size: 6px !important;
-            }}
+            .no-print {{ display:none !important; }}
             th, td {{
               -webkit-print-color-adjust: exact !important;
               print-color-adjust: exact !important;
-              padding: 1px 3px !important;
             }}
-            .no-print {{ display: none !important; }}
-            .print-header {{ font-size: 7px !important; margin-bottom: 2mm !important; }}
           }}
         </style>
         <script>
-          function fitToFrame() {{
+        (function() {{
+          // A4用紙の印刷可能幅・高さ (px @96dpi, 余白10mm想定)
+          var MM = 96 / 25.4;
+          var A4_P_W = Math.round((210 - 20) * MM);  // 縦向き：幅190mm
+          var A4_P_H = Math.round((297 - 20) * MM);  // 縦向き：高265mm
+          var A4_L_W = Math.round((297 - 20) * MM);  // 横向き：幅277mm
+          var A4_L_H = Math.round((210 - 20) * MM);  // 横向き：高190mm
+
+          function fit() {{
             var wrap = document.getElementById('page-wrap');
             if (!wrap) return;
-            var frameW = document.documentElement.clientWidth - 8;
-            var scale = Math.min(1, frameW / 1060);
-            wrap.style.transform = 'scale(' + scale + ')';
-            wrap.style.transformOrigin = 'top left';
-            document.body.style.height = Math.ceil(wrap.offsetHeight * scale + 8) + 'px';
+
+            // まず等倍でサイズ計測（transform外して計測）
+            wrap.style.transform = 'none';
+            wrap.style.width = 'max-content';
+            var natW = wrap.scrollWidth;
+            var natH = wrap.scrollHeight;
+
+            // 縦・横それぞれのscaleを計算し、大きい方（余白が小さい方）を選ぶ
+            var scaleP = Math.min(A4_P_W / natW, A4_P_H / natH);  // 縦向きにフィット
+            var scaleL = Math.min(A4_L_W / natW, A4_L_H / natH);  // 横向きにフィット
+
+            var scale, orientation, printW, printH;
+            if (scaleP >= scaleL) {{
+              scale = scaleP; orientation = 'portrait';
+              printW = A4_P_W + 'px';
+              document.documentElement.style.setProperty('--print-width', printW);
+            }} else {{
+              scale = scaleL; orientation = 'landscape';
+              printW = A4_L_W + 'px';
+              document.documentElement.style.setProperty('--print-width', printW);
+            }}
+
+            // スクリーン：iframeに収まるようにさらに縮小する場合がある
+            var screenW = document.documentElement.clientWidth - 4;
+            var screenScale = Math.min(scale, screenW / natW);
+
+            wrap.style.width = natW + 'px';
+            wrap.style.transform = 'scale(' + screenScale + ')';
+
+            // iframeの高さをStreamlit側に伝えるため body高さを設定
+            document.body.style.height = Math.ceil(natH * screenScale + 48) + 'px';
+
+            // 印刷ボタンに向きを反映
+            var btn = document.getElementById('print-btn');
+            var orient_label = orientation === 'portrait' ? '縦' : '横';
+            if (btn) btn.textContent = '🖨 印刷 / PDF保存（A4' + orient_label + '1枚）';
+
+            // @pageをJSで動的設定
+            var styleId = 'dynamic-page-style';
+            var existing = document.getElementById(styleId);
+            if (existing) existing.remove();
+            var s = document.createElement('style');
+            s.id = styleId;
+            s.textContent = '@media print {{ @page {{ size: A4 ' + orientation + '; margin: 10mm; }} }}';
+            document.head.appendChild(s);
           }}
-          window.addEventListener('load', fitToFrame);
-          window.addEventListener('resize', fitToFrame);
+
+          window.addEventListener('load', fit);
+          window.addEventListener('resize', fit);
+        }})();
         </script>
-        <div id="page-wrap">
+
+        <div id="page-wrap" style="padding:6px;">
           {header_html}
           {two_col_html}
         </div>
-        <div style='margin:10px 0 4px 0;' class='no-print'>
-          <button onclick='window.print()' style='
-              background:#1f77b4;color:white;border:none;
-              padding:8px 16px;border-radius:8px;font-size:15px;cursor:pointer;
-          '>🖨 この週案を印刷 / PDF保存（A4横1枚）</button>
+
+        <div class="no-print" style="margin-top:10px;">
+          <button id="print-btn" onclick="window.print()" style="
+            background:#1f77b4;color:white;border:none;
+            padding:9px 20px;border-radius:8px;font-size:15px;cursor:pointer;
+          ">🖨 印刷 / PDF保存</button>
+          <span style="font-size:12px;color:#555;margin-left:10px;">
+            ※ 縦・横どちらにフィットするか自動判定します
+          </span>
         </div>
         """
-        st.components.v1.html(print_html, height=700, scrolling=False)
+        st.components.v1.html(print_html, height=800, scrolling=False)
         st.info("ボタンを押すと印刷画面が開きます。保存先で『PDFに保存』を選べます。")
 
 # =========================
