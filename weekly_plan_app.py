@@ -2221,6 +2221,68 @@ if role == "教員":
     st.markdown("---")
     st.subheader("📄 印刷・PDF保存用レイアウト（教員用）")
 
+    def build_hours_table_html_for_grade(school_year: str, grade: str) -> str:
+        """指定学年の時数表HTML（標準・実施・残り・進捗）を生成する。"""
+        df_h = build_hours_progress_df(school_year)
+        df_g = df_h[df_h["学年"] == grade].copy()
+        if df_g.empty:
+            return ""
+
+        _bh = "border:1px solid #000;"
+        _th_s = f"{_bh}padding:3px 5px;background:#d0d0d0;color:#111;font-weight:bold;text-align:center;font-size:10px;white-space:nowrap;"
+        _td_l = f"{_bh}padding:3px 5px;background:#f8f8f8;color:#111;font-size:10px;white-space:nowrap;"
+        _td_c = f"{_bh}padding:3px 5px;color:#111;text-align:right;font-size:10px;"
+        _td_warn = f"{_bh}padding:3px 5px;background:#ffe5e5;color:#8b0000;font-weight:bold;text-align:right;font-size:10px;"
+        _td_ok   = f"{_bh}padding:3px 5px;background:#e6ffe6;color:#006400;text-align:right;font-size:10px;"
+        _td_over = f"{_bh}padding:3px 5px;background:#fff0b3;color:#7a5c00;font-weight:bold;text-align:right;font-size:10px;"
+
+        rows_html = ""
+        for _, r in df_g.iterrows():
+            std  = r["標準(45分コマ)"]
+            used = r["実施累積(45分コマ)"]
+            rem  = r["残り(45分コマ)"]
+            pct  = r["進捗(%)"]
+            subj = r["教科等"]
+            if std == 0:
+                continue  # 標準0（学校行事等）は省略
+
+            # 残り時数のセルスタイルを状況で変える
+            if rem > 20:
+                td_rem = f"<td style='{_td_warn}'>▲ {round(rem,1)}</td>"
+            elif rem < -5:
+                td_rem = f"<td style='{_td_over}'>超 {round(abs(rem),1)}</td>"
+            else:
+                td_rem = f"<td style='{_td_ok}'>{round(rem,1)}</td>"
+
+            rows_html += (
+                f"<tr>"
+                f"<td style='{_td_l}'>{subj}</td>"
+                f"<td style='{_td_c}'>{int(std)}</td>"
+                f"<td style='{_td_c}'>{round(used,1)}</td>"
+                f"{td_rem}"
+                f"<td style='{_td_c}'>{round(pct,1)}%</td>"
+                f"</tr>"
+            )
+
+        if not rows_html:
+            return ""
+
+        return (
+            f"<table style='border-collapse:collapse;margin-top:6px;'>"
+            f"<thead><tr>"
+            f"<th style='{_th_s}'>教科等</th>"
+            f"<th style='{_th_s}'>標準<br>（コマ）</th>"
+            f"<th style='{_th_s}'>実施<br>（コマ）</th>"
+            f"<th style='{_th_s}'>残り<br>（コマ）</th>"
+            f"<th style='{_th_s}'>進捗</th>"
+            f"</tr></thead>"
+            f"<tbody>{rows_html}</tbody>"
+            f"</table>"
+            f"<div style='font-size:9px;color:#555;margin-top:2px;'>"
+            f"▲=20コマ超不足 / 超=5コマ超過 / 緑=順調　（1コマ＝45分）"
+            f"</div>"
+        )
+
     df_print = build_print_df(timetable)
     if df_print.empty:
         st.info("有効なコマがありません。")
@@ -2265,6 +2327,24 @@ if role == "教員":
             f"</table>"
         )
 
+        # ── 時数表HTML（年間累積・実施時数・不足時数） ──────────────────
+        hours_table_html = build_hours_table_html_for_grade(current_school_year, base_grade)
+        if hours_table_html:
+            hours_section_html = (
+                f"<div style='margin-top:14px;page-break-inside:avoid;'>"
+                f"<div style='font-size:11px;font-weight:bold;color:#111;margin-bottom:3px;border-bottom:1px solid #999;padding-bottom:2px;'>"
+                f"📊 年間時数集計表（{base_grade}）― {current_school_year} 累積（承認済分）"
+                f"</div>"
+                f"{hours_table_html}"
+                f"</div>"
+            )
+        else:
+            hours_section_html = (
+                f"<div style='margin-top:14px;font-size:10px;color:#999;'>"
+                f"※ 時数データがありません（年度初期化・承認後に反映されます）。"
+                f"</div>"
+            )
+
         st.write(f"**{current_school_year}／{base_grade}／{class_name}／{teacher_display}（{teacher_key}）／{week_str}**")
         st.dataframe(df_print, use_container_width=True, height=420)
 
@@ -2295,6 +2375,7 @@ if role == "教員":
         </style>
         {header_html}
         {table_html}
+        {hours_section_html}
         <div style='margin:12px 0 6px 0;' class='no-print'>
           <button onclick='window.print()' style='
               background:#1f77b4;
@@ -2307,7 +2388,7 @@ if role == "教員":
           '>🖨 この週案を印刷 / PDF保存</button>
         </div>
         """
-        st.components.v1.html(print_html, height=900, scrolling=True)
+        st.components.v1.html(print_html, height=1100, scrolling=True)
         st.info("ボタンを押すと印刷画面が開きます。保存先で『PDFに保存』を選べます。")
 
 # =========================
