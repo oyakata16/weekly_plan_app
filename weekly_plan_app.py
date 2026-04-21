@@ -1,5 +1,5 @@
 # weekly_plan_app.py
-# 東小松川小学校 週案管理システム V7.2 最終強化版
+# 東小松川小学校 週案管理システム V7.1 完全版
 # ------------------------------------------------
 # 追加・修正
 # - 教員 / 管理職のログイン
@@ -15,19 +15,13 @@
 # - DBパス固定化
 # - DuplicateElementId 対策
 # - session_state 書き換え順の整理
-# - sqlite3 import 漏れの補強
-# - Supabase secrets 未設定時の停止を追加
-# - 同一週の重複提出防止（提出/差戻の再提出は上書き）
-# - 承認済み週案の差戻による二重計上防止
-# - 担任学級/週初日（月曜）チェックの追加
 # ------------------------------------------------
 
 import io
 import json
 import re
 import hashlib
-import sqlite3
-from datetime import date, timedelta
+from datetime import date
 from pathlib import Path
 from typing import Optional, List
 
@@ -38,8 +32,6 @@ import streamlit as st
 # 基本設定
 # =========================
 APP_DIR = Path(__file__).resolve().parent
-APP_VERSION = "V7.2"
-SCHOOL_NAME = "東小松川小学校"
 DB_PATH = "Supabase"
 
 DEFAULT_MANAGER_SIGNUP_CODE = "school-admin-2026"
@@ -256,19 +248,6 @@ from urllib.parse import urljoin, quote
 SUPABASE_URL = st.secrets.get("SUPABASE_URL", "")
 SUPABASE_SERVICE_ROLE_KEY = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", st.secrets.get("SUPABASE_KEY", ""))
 
-
-def supabase_is_configured() -> bool:
-    return bool(str(SUPABASE_URL).strip()) and bool(str(SUPABASE_SERVICE_ROLE_KEY).strip())
-
-
-def require_supabase_configuration():
-    if supabase_is_configured():
-        return
-    st.error("Streamlit secrets に SUPABASE_URL と SUPABASE_SERVICE_ROLE_KEY（または SUPABASE_KEY）が設定されていません。")
-    st.info("Secrets を設定後に再実行してください。")
-    st.stop()
-
-
 class SupabaseCompatConnection:
     def commit(self):
         return None
@@ -340,7 +319,7 @@ class SupabaseCompatCursor:
         if q == "SELECT user_id, display_name, password_hash, role, created_at FROM users WHERE TRIM(user_id)=?":
             uid = str(params[0]).strip()
             rows = self._select("users", select="user_id,display_name,password_hash,role,created_at", filters={"user_id": f"eq.{uid}"}, limit=1)
-            self._single = tuple(rows[0].get(k) for k in ["user_id", "display_name", "password_hash", "role", "created_at"]) if rows else None
+            self._single = tuple(rows[0].values()) if rows else None
             return self
         if q == "SELECT COUNT(*) FROM users":
             rows = self._request("GET", "rest/v1/users", params={"select": "user_id"})
@@ -381,11 +360,6 @@ class SupabaseCompatCursor:
             school_year, user_id, week = params
             rows = self._select("weekly_plans", select="id", filters={"school_year": f"eq.{school_year}", "user_id": f"eq.{user_id}", "week": f"eq.{week}", "status": "eq.下書き"}, order="id.desc", limit=1)
             self._single = (rows[0]["id"],) if rows else None
-            return self
-        if q.startswith("SELECT id, status FROM weekly_plans WHERE school_year=? AND TRIM(COALESCE(user_id,'')) = ? AND week=? AND status IN ('下書き','提出','差戻')"):
-            school_year, user_id, week = params
-            rows = self._select("weekly_plans", select="id,status", filters={"school_year": f"eq.{school_year}", "user_id": f"eq.{user_id}", "week": f"eq.{week}", "status": "in.(下書き,提出,差戻)"}, order="id.desc", limit=1)
-            self._single = (rows[0].get("id"), rows[0].get("status")) if rows else None
             return self
         if q.startswith("UPDATE weekly_plans SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, submitted_at=DATETIME('now') WHERE id=?"):
             user_id, teacher_name, teacher, grade, klass, teacher_type, plan_json, row_id = params
@@ -568,8 +542,6 @@ class SupabaseCompatCursor:
     def fetchall(self):
         return self._results
 
-require_supabase_configuration()
-
 conn = SupabaseCompatConnection()
 cur = SupabaseCompatCursor(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
@@ -683,7 +655,7 @@ def logout():
 
 
 def render_login_screen():
-    st.title(f"{SCHOOL_NAME} 週の指導計画（週案）管理システム")
+    st.title("小学校 週の指導計画（週案）管理システム")
     st.subheader("ログイン / 新規登録")
 
     try:
@@ -762,34 +734,6 @@ if not st.session_state["logged_in"]:
 # =========================
 def normalize_teacher_name(name: str) -> str:
     return str(name or "").strip()
-
-
-def normalize_class_name(name: str) -> str:
-    return re.sub(r"\s+", "", str(name or "").strip())
-
-
-def safe_json_loads(raw: str, default=None):
-    if default is None:
-        default = {}
-    if raw in (None, ""):
-        return default.copy() if isinstance(default, dict) else default
-    try:
-        return json.loads(raw)
-    except Exception:
-        return default.copy() if isinstance(default, dict) else default
-
-
-def week_start_monday(d: date) -> date:
-    return d - timedelta(days=d.weekday())
-
-
-def validate_plan_metadata(teacher_type: str, class_name: str, week_value: date):
-    errors = []
-    if teacher_type == "担任" and not normalize_class_name(class_name):
-        errors.append("担任のため、自分の担任学級を入力してください。")
-    if isinstance(week_value, date) and week_value.weekday() != 0:
-        errors.append("対象週は週の初日（月曜日）を選択してください。")
-    return errors
 
 
 def ensure_settings_table():
@@ -1464,15 +1408,6 @@ def load_plan_by_id(wid: int):
     return cur.fetchone()
 
 
-def find_latest_editable_plan(school_year: str, user_id: str, week_str: str):
-    user_id = str(user_id).strip()
-    cur.execute(
-        f"SELECT id, status FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND week=? AND status IN ('下書き','提出','差戻') ORDER BY id DESC LIMIT 1",
-        (school_year, user_id, week_str),
-    )
-    return cur.fetchone()
-
-
 def fetch_latest_plan_before_week(school_year: str, user_id: str, week_str: str):
     user_id = str(user_id).strip()
     cur.execute(
@@ -1485,7 +1420,11 @@ def fetch_latest_plan_before_week(school_year: str, user_id: str, week_str: str)
 def submit_plan_from_current(school_year: str, user_id: str, teacher_name: str, base_grade: str, class_name: str, teacher_type: str, week_str: str, plan: dict):
     user_id = str(user_id).strip()
     teacher_name = normalize_teacher_name(teacher_name)
-    row = find_latest_editable_plan(school_year, user_id, week_str)
+    cur.execute(
+        f"SELECT id FROM weekly_plans WHERE school_year=? AND {user_where_clause('user_id')} AND week=? AND status='下書き' ORDER BY id DESC LIMIT 1",
+        (school_year, user_id, week_str),
+    )
+    row = cur.fetchone()
     if row:
         cur.execute(
             "UPDATE weekly_plans SET user_id=?, teacher_name=?, teacher=?, grade=?, class=?, teacher_type=?, plan_json=?, status='提出', submitted_at=DATETIME('now') WHERE id=?",
@@ -1580,7 +1519,10 @@ def fetch_inquiry_logs(school_year: str, grade: str = None, class_name: str = No
 def aggregate_events_from_plans(plans_rows) -> pd.DataFrame:
     out = []
     for (wid, sy, user_id, teacher_name, grade, class_name, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by) in plans_rows:
-        plan = safe_json_loads(plan_json, {})
+        try:
+            plan = json.loads(plan_json) if plan_json else {}
+        except Exception:
+            plan = {}
         timetable = plan.get("timetable", {}) if isinstance(plan, dict) else {}
         week_mins = compute_week_subject_minutes(timetable, grade)
         for gg, mp in week_mins.items():
@@ -1639,7 +1581,7 @@ auth_user_id = st.session_state["auth_user_id"]
 auth_display_name = st.session_state["auth_display_name"]
 role = st.session_state["auth_role"]
 
-st.title(f"{SCHOOL_NAME} 週の指導計画（週案）管理システム（クラウド版）")
+st.title("小学校 週の指導計画（週案）管理システム（クラウド版）")
 
 st.sidebar.markdown("### ログイン情報")
 st.sidebar.write(f"ID：**{auth_user_id}**")
@@ -1647,7 +1589,7 @@ st.sidebar.write(f"氏名：**{auth_display_name}**")
 st.sidebar.write(f"権限：**{role}**")
 st.sidebar.markdown("---")
 st.sidebar.write(f"📅 現在の年度：**{current_school_year}**")
-st.sidebar.caption(f"DB: {DB_PATH} / {APP_VERSION}")
+st.sidebar.caption(f"DB: {DB_PATH}")
 
 with st.sidebar.expander("🔑 パスワード変更", expanded=False):
     current_pw = st.text_input("現在のパスワード", type="password", key="pw_change_current")
@@ -1706,7 +1648,10 @@ if role == "教員":
             row = load_plan_by_id(id_map[sel])
             if row:
                 _id, _sy, _uid, _tname, _g, _c, _tt, _wk, _pj, _stt = row
-                plan = safe_json_loads(_pj, {})
+                try:
+                    plan = json.loads(_pj) if _pj else {}
+                except Exception:
+                    plan = {}
                 restored_tt = normalize_timetable(plan.get("timetable", {}))
                 restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
                 restored_class = _c or ""
@@ -1740,7 +1685,10 @@ if role == "教員":
         if st.button("⏯ 前回の続きから再開する", key="resume_latest_btn"):
             if latest_auto:
                 _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = latest_auto
-                plan = safe_json_loads(_plan_json, {})
+                try:
+                    plan = json.loads(_plan_json) if _plan_json else {}
+                except Exception:
+                    plan = {}
 
                 restored_tt = normalize_timetable(plan.get("timetable", {}))
                 restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
@@ -1782,7 +1730,10 @@ if role == "教員":
             row = load_autosave_by_id(id_map[sel_auto])
             if row:
                 _sid, _wk, _g, _c, _tt, _saved_at, _plan_json, _meta_json = row
-                plan = safe_json_loads(_plan_json, {})
+                try:
+                    plan = json.loads(_plan_json) if _plan_json else {}
+                except Exception:
+                    plan = {}
 
                 restored_tt = normalize_timetable(plan.get("timetable", {}))
                 restored_teacher_type = _tt if _tt in ["担任", "専科（音楽・家庭科など）"] else "担任"
@@ -1828,27 +1779,17 @@ if role == "教員":
     )
     st.session_state["base_grade"] = base_grade
 
-    class_name = normalize_class_name(
-        st.text_input(
-            "自分の担任学級（例：3-1）※担任でなければ空欄可",
-            key="class_name_input"
-        )
+    class_name = st.text_input(
+        "自分の担任学級（例：3-1）※担任でなければ空欄可",
+        key="class_name_input"
     )
     st.session_state["class_name"] = class_name
-    st.session_state["class_name_input"] = class_name
 
     week = st.date_input(
         "対象週（週の初日：月曜日など）",
         key="week_date_input"
     )
     st.session_state["week_date"] = week
-    if week.weekday() != 0:
-        monday = week_start_monday(week)
-        st.warning(f"選択日は月曜日ではありません。対象週の開始日は {monday} です。")
-        if st.button("📅 この週の月曜日に補正する", key="normalize_week_to_monday_btn"):
-            st.session_state["week_date_input"] = monday
-            st.session_state["week_date"] = monday
-            st.rerun()
     week_str = str(week)
 
     if teacher_type == "担任":
@@ -1894,7 +1835,7 @@ if role == "教員":
             key="classes_extra_input",
             placeholder="例：たんぽぽ,つくし"
         )
-        extra_classes = [normalize_class_name(c) for c in extra_input.split(",") if normalize_class_name(c)]
+        extra_classes = [c.strip() for c in extra_input.split(",") if c.strip()]
 
         class_candidates = list(selected_classes)
         for c in extra_classes:
@@ -1925,7 +1866,10 @@ if role == "教員":
             st.warning("前週データが見つかりませんでした。")
         else:
             plan_json, prev_week, prev_status = row
-            prev_plan = safe_json_loads(plan_json, {})
+            try:
+                prev_plan = json.loads(plan_json) if plan_json else {}
+            except Exception:
+                prev_plan = {}
 
             restored_tt = normalize_timetable(prev_plan.get("timetable", {}))
             st.session_state["restore_plan"] = {"timetable": restored_tt}
@@ -2256,7 +2200,7 @@ if role == "教員":
 
     with col_b:
         if st.button("✅ この内容で管理職へ提出する", key="submit_btn"):
-            errors = validate_plan_metadata(teacher_type, class_name, week) + validate_timetable_for_submit(timetable, teacher_type)
+            errors = validate_timetable_for_submit(timetable, teacher_type)
             if errors:
                 st.error("入力に不備があります。下記を修正してください：")
                 for e in errors:
@@ -2721,7 +2665,10 @@ if role == "管理職":
         st.caption("※ 各行をクリックすると詳細が表示されます。")
 
     for (wid, school_year, user_id, teacher_name, grade, class_name, teacher_type, week, plan_json, status, submitted_at, approved_at, approved_by) in rows:
-        plan = safe_json_loads(plan_json, {})
+        try:
+            plan = json.loads(plan_json) if plan_json else {}
+        except Exception:
+            plan = {}
         timetable = normalize_timetable(plan.get("timetable", {}))
         week_minutes_all = compute_week_subject_minutes(timetable, grade)
         title = f"ID:{wid} / {school_year} / {week} / {grade} / {class_name} / {teacher_label(user_id, teacher_name)} / 状態：{status}"
@@ -2748,7 +2695,7 @@ if role == "管理職":
             col1, col2 = st.columns(2)
             with col1:
                 if st.button(f"✅ 承認する（ID:{wid}）", key=f"approve_{wid}"):
-                    if status == "提出":
+                    if status != "承認":
                         for g in week_minutes_all:
                             for subj, mins in week_minutes_all[g].items():
                                 add_hours(view_year, g, subj, mins)
@@ -2759,21 +2706,17 @@ if role == "管理職":
                         conn.commit()
                         st.success("承認しました。年間累積時数に反映済みです。")
                         st.rerun()
-                    elif status == "承認":
-                        st.info("すでに承認済みです。")
                     else:
-                        st.warning("承認できるのは『提出』状態の週案のみです。")
+                        st.info("すでに承認済みです。")
             with col2:
                 if st.button(f"↩ 差戻にする（ID:{wid}）", key=f"reject_{wid}"):
-                    if status == "提出":
+                    if status != "差戻":
                         cur.execute("UPDATE weekly_plans SET status='差戻' WHERE id=?", (wid,))
                         conn.commit()
                         st.warning("差戻にしました。")
                         st.rerun()
-                    elif status == "差戻":
-                        st.info("すでに差戻済みです。")
                     else:
-                        st.warning("差戻できるのは『提出』状態の週案のみです。承認済み週案は差戻しません。")
+                        st.info("すでに差戻済みです。")
 
     st.markdown("---")
     st.header(f"📊 年間累積時数の状況（{view_year}）")
@@ -2966,7 +2909,7 @@ if role == "管理職":
 
     today_str = date.today().strftime("%Y%m%d")
     submit_csv = df_submit.to_csv(index=False).encode("utf-8-sig")
-    school_short = SCHOOL_NAME
+    school_short = "東小松川小学校"
     reiwa_short = to_reiwa_short(view_year)
     submit_name = f"{reiwa_short}_年間指導時数集計_{school_short}_{today_str}.csv"
     st.download_button("⬇️ 区教委提出用CSVをダウンロード", submit_csv, submit_name, "text/csv")
