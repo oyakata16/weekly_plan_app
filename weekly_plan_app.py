@@ -2119,7 +2119,27 @@ if role == "教員":
     df_my = pd.DataFrame(slot_rows)
     my_csv = df_my.to_csv(index=False).encode("utf-8-sig")
     today_str = date.today().strftime("%Y%m%d")
-    my_name = f"{teacher_key}_{base_grade}_{week_str}_{today_str}_my_weekly_plan.csv".replace("/", "_")
+
+    # ── ファイル名：「学年組_作成日」or「専科名_作成日」──
+    def _make_file_stem() -> str:
+        if teacher_type.startswith("専科"):
+            # timetable 全コマの教科を集計し最多のものを専科名とする
+            subj_count: dict = {}
+            for day_slots in timetable.values():
+                for segs in day_slots.values():
+                    for seg in (segs if isinstance(segs, list) else [segs]):
+                        s = (seg.get("subject") or "").strip()
+                        if s:
+                            subj_count[s] = subj_count.get(s, 0) + 1
+            top_subj = max(subj_count, key=subj_count.get) if subj_count else "専科"
+            return f"{top_subj}_{today_str}"
+        else:
+            grade_part = base_grade.replace(" ", "")
+            class_part = class_name.replace(" ", "") if class_name else ""
+            return f"{grade_part}{class_part}_{today_str}"
+
+    file_stem = _make_file_stem()
+    my_name = f"{file_stem}_週案.csv"
     st.download_button("⬇️ この週案をCSVで保存", my_csv, my_name, "text/csv")
 
     st.markdown("---")
@@ -2359,6 +2379,7 @@ if role == "教員":
 
         # A4の印刷可能領域（mm）。縦横どちらにもフィットさせるためJSで判定。
         # 縦：幅190mm 高さ267mm / 横：幅277mm 高さ190mm（余白10mm想定）
+        pdf_title = file_stem  # PDF保存時のデフォルトファイル名
         print_html = f"""
         <style>
           * {{ box-sizing: border-box; margin: 0; padding: 0; }}
@@ -2446,6 +2467,9 @@ if role == "教員":
             s.id = styleId;
             s.textContent = '@media print {{ @page {{ size: A4 ' + orientation + '; margin: 10mm; }} }}';
             document.head.appendChild(s);
+
+            // PDFのデフォルトファイル名をdocument.titleで設定
+            document.title = '{pdf_title}_週案';
           }}
 
           window.addEventListener('load', fit);
