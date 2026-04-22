@@ -21,12 +21,24 @@ import io
 import json
 import re
 import hashlib
+import subprocess
+import sys
 from datetime import date
 from pathlib import Path
 from typing import Optional, List
 
 import pandas as pd
 import streamlit as st
+
+# WeasyPrint が未インストールの場合は自動インストール
+try:
+    import weasyprint as _wp  # noqa: F401
+except ModuleNotFoundError:
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "weasyprint", "--quiet"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 # =========================
 # 基本設定
@@ -2381,7 +2393,9 @@ if role == "教員":
         # 縦・横どちらが余白少なくフィットするか判定してA4ぴったりに出力
         def _build_pdf_bytes(html_body: str) -> tuple[bytes, str]:
             """HTMLからPDFバイト列と選択した向き('portrait'/'landscape')を返す。"""
-            from weasyprint import HTML, CSS
+            import importlib
+            _wp = importlib.import_module("weasyprint")
+            HTML, CSS = _wp.HTML, _wp.CSS
 
             # 縦・横それぞれでレンダリングし、余白が少ない方を採用
             def _render(orientation: str) -> bytes:
