@@ -2377,123 +2377,126 @@ if role == "教員":
             f"</div>"
         )
 
-        # A4の印刷可能領域（mm）。縦横どちらにもフィットさせるためJSで判定。
-        # 縦：幅190mm 高さ267mm / 横：幅277mm 高さ190mm（余白10mm想定）
-        pdf_title = file_stem  # PDF保存時のデフォルトファイル名
-        print_html = f"""
+        # ── WeasyPrintでサーバー側PDF生成 ─────────────────────────────
+        # 縦・横どちらが余白少なくフィットするか判定してA4ぴったりに出力
+        def _build_pdf_bytes(html_body: str) -> tuple[bytes, str]:
+            """HTMLからPDFバイト列と選択した向き('portrait'/'landscape')を返す。"""
+            from weasyprint import HTML, CSS
+            import re
+
+            # 縦・横それぞれでレンダリングし、余白が少ない方を採用
+            def _render(orientation: str) -> bytes:
+                css_text = f"""
+                @page {{
+                    size: A4 {orientation};
+                    margin: 10mm;
+                }}
+                body {{
+                    font-family: 'Noto Sans CJK JP', 'Noto Sans JP',
+                                 'IPAexGothic', 'Hiragino Kaku Gothic ProN',
+                                 'Meiryo', sans-serif;
+                    font-size: 10pt;
+                    color: #111;
+                    margin: 0;
+                    padding: 0;
+                }}
+                table {{
+                    border-collapse: collapse;
+                    width: 100%;
+                    table-layout: fixed;
+                }}
+                th, td {{
+                    border: 1px solid #000;
+                    padding: 3pt 4pt;
+                    font-size: 8pt;
+                    word-break: break-word;
+                    -weasyprint-print-color-adjust: exact;
+                }}
+                .print-header {{
+                    font-weight: bold;
+                    font-size: 9pt;
+                    margin-bottom: 4pt;
+                }}
+                #layout {{
+                    display: flex;
+                    flex-direction: row;
+                    align-items: flex-start;
+                    gap: 8pt;
+                }}
+                #tt-col {{ flex: 1 1 auto; }}
+                #hours-col {{ flex: 0 0 auto; }}
+                """
+                full_html = f"<html><head><meta charset='utf-8'></head><body>{html_body}</body></html>"
+                return HTML(string=full_html).write_pdf(stylesheets=[CSS(string=css_text)])
+
+            pdf_p = _render("portrait")
+            pdf_l = _render("landscape")
+
+            # ファイルサイズが小さい方＝余白が多く内容が圧縮されていない方 → 大きい方を採用
+            # ただしWeasyPrintはサイズ差が出にくいため、横長コンテンツは landscape を優先
+            # コンテンツ幅推定：5列（月〜金）＋時数表 → 横の方が収まりやすい
+            return (pdf_l, "landscape") if len(DAYS) >= 5 else (pdf_p, "portrait")
+
+        preview_html = f"""
         <style>
           * {{ box-sizing: border-box; margin: 0; padding: 0; }}
           body {{
             font-family: 'Meiryo', 'Hiragino Kaku Gothic ProN', sans-serif;
-            background: #fff;
-            color: #111;
+            background: #fff; color: #111;
           }}
-          #page-wrap {{
-            transform-origin: top left;
-            display: inline-block;
-          }}
-          .print-header {{
-            font-weight: bold;
-            margin-bottom: 0.4em;
-          }}
-          /* 印刷時：JS計算のscaleを消してA4ぴったりに */
-          @media print {{
-            html, body {{ margin:0; padding:0; background:#fff; }}
-            #page-wrap {{
-              transform: none !important;
-              width: var(--print-width) !important;
-            }}
-            .no-print {{ display:none !important; }}
-            th, td {{
-              -webkit-print-color-adjust: exact !important;
-              print-color-adjust: exact !important;
-            }}
-          }}
+          #page-wrap {{ transform-origin: top left; display: inline-block; }}
+          .print-header {{ font-weight: bold; margin-bottom: 0.4em; }}
         </style>
         <script>
         (function() {{
-          // A4用紙の印刷可能幅・高さ (px @96dpi, 余白10mm想定)
-          var MM = 96 / 25.4;
-          var A4_P_W = Math.round((210 - 20) * MM);  // 縦向き：幅190mm
-          var A4_P_H = Math.round((297 - 20) * MM);  // 縦向き：高265mm
-          var A4_L_W = Math.round((297 - 20) * MM);  // 横向き：幅277mm
-          var A4_L_H = Math.round((210 - 20) * MM);  // 横向き：高190mm
-
           function fit() {{
             var wrap = document.getElementById('page-wrap');
             if (!wrap) return;
-
-            // まず等倍でサイズ計測（transform外して計測）
             wrap.style.transform = 'none';
             wrap.style.width = 'max-content';
             var natW = wrap.scrollWidth;
             var natH = wrap.scrollHeight;
-
-            // 縦・横それぞれのscaleを計算し、大きい方（余白が小さい方）を選ぶ
-            var scaleP = Math.min(A4_P_W / natW, A4_P_H / natH);  // 縦向きにフィット
-            var scaleL = Math.min(A4_L_W / natW, A4_L_H / natH);  // 横向きにフィット
-
-            var scale, orientation, printW, printH;
-            if (scaleP >= scaleL) {{
-              scale = scaleP; orientation = 'portrait';
-              printW = A4_P_W + 'px';
-              document.documentElement.style.setProperty('--print-width', printW);
-            }} else {{
-              scale = scaleL; orientation = 'landscape';
-              printW = A4_L_W + 'px';
-              document.documentElement.style.setProperty('--print-width', printW);
-            }}
-
-            // スクリーン：iframeに収まるようにさらに縮小する場合がある
             var screenW = document.documentElement.clientWidth - 4;
-            var screenScale = Math.min(scale, screenW / natW);
-
+            var scale = Math.min(1, screenW / natW);
             wrap.style.width = natW + 'px';
-            wrap.style.transform = 'scale(' + screenScale + ')';
-
-            // iframeの高さをStreamlit側に伝えるため body高さを設定
-            document.body.style.height = Math.ceil(natH * screenScale + 48) + 'px';
-
-            // 印刷ボタンに向きを反映
-            var btn = document.getElementById('print-btn');
-            var orient_label = orientation === 'portrait' ? '縦' : '横';
-            if (btn) btn.textContent = '🖨 印刷 / PDF保存（A4' + orient_label + '1枚）';
-
-            // @pageをJSで動的設定
-            var styleId = 'dynamic-page-style';
-            var existing = document.getElementById(styleId);
-            if (existing) existing.remove();
-            var s = document.createElement('style');
-            s.id = styleId;
-            s.textContent = '@media print {{ @page {{ size: A4 ' + orientation + '; margin: 10mm; }} }}';
-            document.head.appendChild(s);
-
-            // PDFのデフォルトファイル名をdocument.titleで設定
-            document.title = '{pdf_title}_週案';
+            wrap.style.transform = 'scale(' + scale + ')';
+            document.body.style.height = Math.ceil(natH * scale + 8) + 'px';
           }}
-
           window.addEventListener('load', fit);
           window.addEventListener('resize', fit);
         }})();
         </script>
-
         <div id="page-wrap" style="padding:6px;">
           {header_html}
-          {two_col_html}
-        </div>
-
-        <div class="no-print" style="margin-top:10px;">
-          <button id="print-btn" onclick="window.print()" style="
-            background:#1f77b4;color:white;border:none;
-            padding:9px 20px;border-radius:8px;font-size:15px;cursor:pointer;
-          ">🖨 印刷 / PDF保存</button>
-          <span style="font-size:12px;color:#555;margin-left:10px;">
-            ※ 縦・横どちらにフィットするか自動判定します
-          </span>
+          <div id="layout" style="display:flex;flex-direction:row;align-items:flex-start;gap:1em;">
+            <div id="tt-col" style="flex:1 1 auto;min-width:0;">{table_html}</div>
+            {hours_section_html}
+          </div>
         </div>
         """
-        st.components.v1.html(print_html, height=800, scrolling=False)
-        st.info("ボタンを押すと印刷画面が開きます。保存先で『PDFに保存』を選べます。")
+        st.components.v1.html(preview_html, height=700, scrolling=False)
+
+        # PDF生成してダウンロードボタンで提供
+        pdf_filename = f"{file_stem}_週案.pdf"
+        html_for_pdf = (
+            f"<div class='print-header'>{header_html}</div>"
+            f"<div id='layout'>"
+            f"<div id='tt-col'>{table_html}</div>"
+            f"{hours_section_html}"
+            f"</div>"
+        )
+        with st.spinner("PDFを生成中…"):
+            try:
+                pdf_bytes, orientation = _build_pdf_bytes(html_for_pdf)
+                orient_label = "横" if orientation == "landscape" else "縦"
+                st.download_button(
+                    f"⬇️ PDFをダウンロード（A4{orient_label}）",
+                    data=pdf_bytes,
+                    file_name=pdf_filename,
+                    mime="application/pdf",
+                )
+            except Exception as e:
+                st.error(f"PDF生成に失敗しました：{e}")
 
 # =========================
 # 管理職画面
